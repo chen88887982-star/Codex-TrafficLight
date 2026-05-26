@@ -51,7 +51,13 @@ StatusUrl=http://127.0.0.1:8765/status
 跨电脑时改成运行 Codex 那台电脑的局域网 IP：
 
 ```ini
-StatusUrl=http://192.168.1.100:8765/status
+StatusUrl=http://192.168.2.112:8765/rainmeter
+```
+
+这套 Win + Win 设备的 JSON 验证地址是：
+
+```text
+http://192.168.2.112:8765/status
 ```
 
 保存后，在 Rainmeter 管理器里刷新这个皮肤。
