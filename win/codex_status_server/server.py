@@ -29,6 +29,16 @@ DEFAULT_STATUS = {
     "updated_at": "1970-01-01T00:00:00+00:00",
 }
 
+DEFAULT_USAGE = {
+    "available": False,
+    "plan_type": "",
+    "primary_remaining_percent": "",
+    "primary_resets_at": "",
+    "secondary_remaining_percent": "",
+    "secondary_resets_at": "",
+    "updated_at": "",
+}
+
 
 status_lock = threading.Lock()
 
@@ -76,6 +86,87 @@ def read_status() -> dict[str, str]:
     }
 
 
+def clean_field(value: object) -> str:
+    return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+
+
+def iter_recent_session_files(limit: int = 5) -> list[Path]:
+    if not CODEX_SESSIONS_DIR.exists():
+        return []
+    files = list(CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"))
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files[:limit]
+
+
+def format_reset_label(epoch_seconds: object) -> str:
+    try:
+        reset_at = datetime.fromtimestamp(int(epoch_seconds)).astimezone()
+    except (TypeError, ValueError, OSError):
+        return "--"
+
+    now = datetime.now().astimezone()
+    if reset_at.date() == now.date():
+        return reset_at.strftime("%H:%M")
+    return f"{reset_at.month}月{reset_at.day}日"
+
+
+def remaining_percent(used_percent: object) -> str:
+    try:
+        remaining = 100 - float(used_percent)
+    except (TypeError, ValueError):
+        return "--"
+    remaining = max(0, min(100, round(remaining)))
+    return f"{remaining}%"
+
+
+def usage_from_event(event: dict[str, object]) -> dict[str, object] | None:
+    rate_limits = event.get("rate_limits")
+    payload = event.get("payload")
+    if rate_limits is None and isinstance(payload, dict):
+        rate_limits = payload.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return None
+
+    primary = rate_limits.get("primary")
+    secondary = rate_limits.get("secondary")
+    if not isinstance(primary, dict) or not isinstance(secondary, dict):
+        return None
+
+    return {
+        "available": True,
+        "plan_type": str(rate_limits.get("plan_type") or ""),
+        "primary_remaining_percent": remaining_percent(primary.get("used_percent")),
+        "primary_resets_at": format_reset_label(primary.get("resets_at")),
+        "secondary_remaining_percent": remaining_percent(secondary.get("used_percent")),
+        "secondary_resets_at": format_reset_label(secondary.get("resets_at")),
+        "updated_at": str(event.get("timestamp", "")),
+    }
+
+
+def read_usage() -> dict[str, object]:
+    for path in iter_recent_session_files(limit=20):
+        try:
+            with path.open("rb") as fh:
+                size = path.stat().st_size
+                fh.seek(max(0, size - 512 * 1024))
+                chunk = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+
+        for line in reversed(chunk.splitlines()):
+            if '"rate_limits"' not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = usage_from_event(event)
+            if usage:
+                return usage
+
+    return DEFAULT_USAGE.copy()
+
+
 class StatusHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -85,6 +176,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/")
         if path == "/rainmeter":
             status_data = read_status()
+            usage_data = read_usage()
             status_codes = {
                 "idle": "0",
                 "running": "1",
@@ -92,10 +184,14 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}".format(
                 code=status_codes.get(status_data["status"], "4"),
-                message=status_data["message"].replace("|", "/").replace("\r", " ").replace("\n", " "),
-                updated_at=status_data["updated_at"].replace("|", "/").replace("\r", " ").replace("\n", " "),
+                message=clean_field(status_data["message"]),
+                updated_at=clean_field(status_data["updated_at"]),
+                primary_remaining=clean_field(usage_data["primary_remaining_percent"] or "--"),
+                primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
+                secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
+                secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
             )
             body = text.encode("utf-8")
             self.send_response(200)
@@ -109,6 +205,19 @@ class StatusHandler(BaseHTTPRequestHandler):
             write_log("Response 200 rainmeter")
             return
 
+        if path == "/usage":
+            body = json.dumps(read_usage(), ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            write_log("Response 200 usage")
+            return
+
         if path != "/status":
             body = b"Not Found"
             self.send_response(404)
@@ -120,7 +229,9 @@ class StatusHandler(BaseHTTPRequestHandler):
             write_log("Response 404")
             return
 
-        body = json.dumps(read_status(), ensure_ascii=False, indent=2).encode("utf-8")
+        status_data = read_status()
+        status_data["usage"] = read_usage()
+        body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -138,14 +249,6 @@ class StatusHandler(BaseHTTPRequestHandler):
 class StatusServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
-
-
-def iter_recent_session_files() -> list[Path]:
-    if not CODEX_SESSIONS_DIR.exists():
-        return []
-    files = list(CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"))
-    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    return files[:5]
 
 
 def apply_codex_event(event: dict[str, object]) -> str:

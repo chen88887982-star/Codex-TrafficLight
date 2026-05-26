@@ -34,6 +34,8 @@ if ($value -gt 100) {
 }
 
 $alpha = [int][Math]::Round($value * 255 / 100)
+$strokeAlpha = [int][Math]::Round($value * 220 / 100)
+$highlightAlpha = [int][Math]::Round($value * 12 / 100)
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
 
 if ($content -match '(?m)^BackgroundOpacity=.*$') {
@@ -54,5 +56,30 @@ if ($content -match '(?m)^BackgroundColor=.*$') {
   $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundColor=18,20,24,$alpha`r`n"
 }
 
+if ($content -match '(?m)^PanelStrokeAlpha=.*$') {
+  $content = $content -replace '(?m)^PanelStrokeAlpha=.*$', "PanelStrokeAlpha=$strokeAlpha"
+} else {
+  $content = $content -replace '(\[Variables\]\s*)', "`$1PanelStrokeAlpha=$strokeAlpha`r`n"
+}
+
+if ($content -match '(?m)^PanelStrokeColor=.*$') {
+  $content = $content -replace '(?m)^PanelStrokeColor=.*$', "PanelStrokeColor=70,76,86,$strokeAlpha"
+} else {
+  $content = $content -replace '(\[Variables\]\s*)', "`$1PanelStrokeColor=70,76,86,$strokeAlpha`r`n"
+}
+
+if ($content -match '(?m)^BackgroundHighlightAlpha=.*$') {
+  $content = $content -replace '(?m)^BackgroundHighlightAlpha=.*$', "BackgroundHighlightAlpha=$highlightAlpha"
+} else {
+  $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundHighlightAlpha=$highlightAlpha`r`n"
+}
+
+if ($content -match '(?m)^BackgroundHighlightColor=.*$') {
+  $content = $content -replace '(?m)^BackgroundHighlightColor=.*$', "BackgroundHighlightColor=255,255,255,$highlightAlpha"
+} else {
+  $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundHighlightColor=255,255,255,$highlightAlpha`r`n"
+}
+
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
+
 

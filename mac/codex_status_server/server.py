@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,12 +15,31 @@ STATUS_FILE = BASE_DIR / "status.json"
 LOG_FILE = BASE_DIR / "status-server.log"
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
+AUTO_MONITOR = os.environ.get("AUTO_MONITOR_CODEX", "1") != "0"
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
+SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
+MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.25"))
+RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
 
 DEFAULT_STATUS = {
     "status": "idle",
     "message": "Codex 空闲",
     "updated_at": "1970-01-01T00:00:00+00:00",
 }
+
+DEFAULT_USAGE = {
+    "available": False,
+    "plan_type": "",
+    "primary_remaining_percent": "",
+    "primary_resets_at": "",
+    "secondary_remaining_percent": "",
+    "secondary_resets_at": "",
+    "updated_at": "",
+}
+
+
+status_lock = threading.Lock()
 
 
 def write_log(message: str) -> None:
@@ -28,12 +49,23 @@ def write_log(message: str) -> None:
         fh.write(line + "\n")
 
 
+def write_status(status: str, message: str) -> None:
+    payload = {
+        "status": status,
+        "message": message,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    with status_lock:
+        STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def read_status() -> dict[str, str]:
     if not STATUS_FILE.exists():
         return DEFAULT_STATUS
 
     try:
-        data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+        with status_lock:
+            data = json.loads(STATUS_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         write_log(f"status.json read failed: {exc}")
         return {
@@ -53,6 +85,190 @@ def read_status() -> dict[str, str]:
     }
 
 
+def clean_field(value: object) -> str:
+    return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+
+
+def iter_recent_session_files(limit: int = 20) -> list[Path]:
+    if not CODEX_SESSIONS_DIR.exists():
+        return []
+    files = list(CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"))
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files[:limit]
+
+
+def format_reset_label(epoch_seconds: object) -> str:
+    try:
+        reset_at = datetime.fromtimestamp(int(epoch_seconds)).astimezone()
+    except (TypeError, ValueError, OSError):
+        return "--"
+    now = datetime.now().astimezone()
+    if reset_at.date() == now.date():
+        return reset_at.strftime("%H:%M")
+    return f"{reset_at.month}月{reset_at.day}日"
+
+
+def remaining_percent(used_percent: object) -> str:
+    try:
+        remaining = 100 - float(used_percent)
+    except (TypeError, ValueError):
+        return "--"
+    remaining = max(0, min(100, round(remaining)))
+    return f"{remaining}%"
+
+
+def usage_from_event(event: dict[str, object]) -> dict[str, object] | None:
+    rate_limits = event.get("rate_limits")
+    payload = event.get("payload")
+    if rate_limits is None and isinstance(payload, dict):
+        rate_limits = payload.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return None
+    primary = rate_limits.get("primary")
+    secondary = rate_limits.get("secondary")
+    if not isinstance(primary, dict) or not isinstance(secondary, dict):
+        return None
+    return {
+        "available": True,
+        "plan_type": str(rate_limits.get("plan_type") or ""),
+        "primary_remaining_percent": remaining_percent(primary.get("used_percent")),
+        "primary_resets_at": format_reset_label(primary.get("resets_at")),
+        "secondary_remaining_percent": remaining_percent(secondary.get("used_percent")),
+        "secondary_resets_at": format_reset_label(secondary.get("resets_at")),
+        "updated_at": str(event.get("timestamp", "")),
+    }
+
+
+def read_usage() -> dict[str, object]:
+    for path in iter_recent_session_files():
+        try:
+            with path.open("rb") as fh:
+                size = path.stat().st_size
+                fh.seek(max(0, size - 512 * 1024))
+                chunk = fh.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in reversed(chunk.splitlines()):
+            if '"rate_limits"' not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = usage_from_event(event)
+            if usage:
+                return usage
+    return DEFAULT_USAGE.copy()
+
+
+def apply_codex_event(event: dict[str, object]) -> str:
+    event_type = str(event.get("type", ""))
+    payload = event.get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {}
+
+    payload_type = str(payload.get("type", ""))
+    if event_type == "event_msg" and payload_type in {"approval_request", "permission_request", "user_input_requested"}:
+        write_status("waiting", "Codex 等待用户确认")
+        return "waiting"
+
+    if event_type == "response_item" and payload_type == "function_call":
+        arguments = str(payload.get("arguments", ""))
+        if "require_escalated" in arguments:
+            write_status("waiting", "Codex 等待用户确认")
+            return "waiting"
+
+    if event_type == "event_msg" and payload_type == "task_started":
+        write_status("running", "Codex 正在处理任务")
+        return "running"
+
+    if event_type == "response_item" and payload_type == "function_call":
+        name = str(payload.get("name", "工具"))
+        write_status("running", f"Codex 正在执行 {name}")
+        return "running"
+
+    if event_type == "response_item" and payload_type == "function_call_output":
+        write_status("running", "Codex 正在处理工具结果")
+        return "running"
+
+    if event_type == "response_item" and payload_type in {"reasoning", "message"}:
+        phase = str(payload.get("phase", ""))
+        if phase != "final_answer":
+            write_status("running", "Codex 正在生成回复")
+            return "running"
+
+    if event_type == "event_msg" and payload_type == "agent_message":
+        phase = str(payload.get("phase", ""))
+        if phase != "final_answer":
+            write_status("running", "Codex 正在处理任务")
+            return "running"
+
+    if event_type == "event_msg" and payload_type == "task_complete":
+        write_status("success", "Codex 任务完成")
+        return "success"
+
+    return ""
+
+
+def codex_status_monitor() -> None:
+    write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
+    positions: dict[Path, int] = {}
+    last_success_at = 0.0
+    last_running_at = 0.0
+    initialized = False
+
+    while True:
+        try:
+            files = iter_recent_session_files(limit=5)
+            if not files:
+                time.sleep(1)
+                continue
+
+            if not initialized:
+                for path in files:
+                    positions[path] = path.stat().st_size
+                write_status("idle", "Codex 空闲")
+                initialized = True
+                time.sleep(MONITOR_INTERVAL_SECONDS)
+                continue
+
+            for path in files:
+                if path not in positions:
+                    positions[path] = 0
+
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(positions[path])
+                    lines = fh.readlines()
+                    positions[path] = fh.tell()
+
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    applied_status = apply_codex_event(event)
+                    if applied_status in {"running", "waiting"}:
+                        last_running_at = time.time()
+                    elif applied_status == "success":
+                        last_success_at = time.time()
+
+            current = read_status()
+            if current.get("status") == "success" and last_success_at and time.time() - last_success_at > SUCCESS_HOLD_SECONDS:
+                write_status("idle", "Codex 空闲")
+                last_success_at = 0.0
+            elif current.get("status") == "running" and last_running_at and time.time() - last_running_at > RUNNING_STALE_SECONDS:
+                write_status("idle", "Codex 空闲")
+                last_running_at = 0.0
+
+        except Exception as exc:
+            write_log(f"Codex auto monitor error: {exc}")
+
+        time.sleep(MONITOR_INTERVAL_SECONDS)
+
+
 class StatusHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -62,6 +278,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/")
         if path == "/rainmeter":
             status_data = read_status()
+            usage_data = read_usage()
             status_codes = {
                 "idle": "0",
                 "running": "1",
@@ -69,10 +286,14 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}".format(
                 code=status_codes.get(status_data["status"], "4"),
-                message=status_data["message"].replace("|", "/").replace("\r", " ").replace("\n", " "),
-                updated_at=status_data["updated_at"].replace("|", "/").replace("\r", " ").replace("\n", " "),
+                message=clean_field(status_data["message"]),
+                updated_at=clean_field(status_data["updated_at"]),
+                primary_remaining=clean_field(usage_data["primary_remaining_percent"] or "--"),
+                primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
+                secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
+                secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
             )
             body = text.encode("utf-8")
             self.send_response(200)
@@ -86,12 +307,27 @@ class StatusHandler(BaseHTTPRequestHandler):
             write_log("Response 200 rainmeter")
             return
 
+        if path == "/usage":
+            body = json.dumps(read_usage(), ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            write_log("Response 200 usage")
+            return
+
         if path != "/status":
             self.send_error(404, "Not Found")
             write_log("Response 404")
             return
 
-        body = json.dumps(read_status(), ensure_ascii=False, indent=2).encode("utf-8")
+        status_data = read_status()
+        status_data["usage"] = read_usage()
+        body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -112,11 +348,20 @@ class StatusServer(ThreadingHTTPServer):
 
 
 def main() -> None:
+    if not STATUS_FILE.exists():
+        STATUS_FILE.write_text(json.dumps(DEFAULT_STATUS, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
     server = StatusServer((HOST, PORT), StatusHandler)
     write_log(f"Codex status server started on {HOST}:{PORT}")
     print(f"Codex status server: http://{HOST}:{PORT}/status")
     print(f"Status file: {STATUS_FILE}")
     print(f"Log file: {LOG_FILE}")
+    print(f"Codex usage sessions: {CODEX_SESSIONS_DIR}")
+    if AUTO_MONITOR:
+        threading.Thread(target=codex_status_monitor, name="codex-status-monitor", daemon=True).start()
+        print(f"Auto monitor: {CODEX_SESSIONS_DIR}")
+    else:
+        print("Auto monitor: disabled")
     try:
         server.serve_forever()
     finally:

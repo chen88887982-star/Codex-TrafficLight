@@ -70,6 +70,15 @@ Windows 状态服务现在默认使用 Python 标准库 HTTP 服务。运行电�
 
 Windows 状态服务会自动监听当前用户的 Codex 会话日志，并根据对话任务状态更新灯光：任务开始、生成回复、执行工具或处理工具结果都会立即保持红灯，任务完成为绿灯，完成 45 秒后回到灰灯。
 
+状态服务也会自动读取当前用户的 Codex 剩余额度。默认路径是：
+
+```text
+Windows: %USERPROFILE%\.codex\sessions
+macOS: ~/.codex/sessions
+```
+
+如果用户把 Codex 数据目录放在别处，可以在启动服务前设置 `CODEX_HOME` 环境变量，指向自己的 `.codex` 目录。服务会读取日志里的 `rate_limits.used_percent`，并自动换算成剩余额度 `100 - used_percent`。
+
 如果不想保留黑色窗口，可以双击：
 
 ```text
@@ -88,6 +97,12 @@ win\codex_status_server\stop-server.cmd
 
 ```text
 http://127.0.0.1:8765/status
+```
+
+查看剩余额度接口：
+
+```text
+http://127.0.0.1:8765/usage
 ```
 
 如果是另一台 Windows 读取，就在另一台电脑浏览器打开：
