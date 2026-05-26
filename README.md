@@ -64,6 +64,8 @@ StatusUrl=http://192.168.1.100:8765/status
 win\codex_status_server\start-server.cmd
 ```
 
+Windows 状态服务现在默认使用 Python 标准库 HTTP 服务。运行电脑需要安装 Python 3，并且命令行能识别 `py -3` 或 `python`。
+
 如果不想保留黑色窗口，可以双击：
 
 ```text
@@ -97,6 +99,8 @@ win\codex_status_server\status-server.log
 ```
 
 如果 Rainmeter 一直显示连接失败，先看这个日志里有没有 `Request from`。没有请求，说明 Rainmeter 没有访问到服务；有请求但仍失败，再看 Rainmeter 的调试信息和返回内容。
+
+旧的 `server.ps1` 只是保留作备用，不再作为默认启动方式。
 
 切换状态：
 

@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parent
 STATUS_FILE = BASE_DIR / "status.json"
+LOG_FILE = BASE_DIR / "status-server.log"
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
 
@@ -19,13 +21,21 @@ DEFAULT_STATUS = {
 }
 
 
+def write_log(message: str) -> None:
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+    print(message, flush=True)
+    with LOG_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
 def read_status() -> dict[str, str]:
     if not STATUS_FILE.exists():
         return DEFAULT_STATUS
 
     try:
         data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        write_log(f"status.json read failed: {exc}")
         return {
             "status": "error",
             "message": "status.json 读取失败",
@@ -44,9 +54,14 @@ def read_status() -> dict[str, str]:
 
 
 class StatusHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def do_GET(self) -> None:
+        write_log(f"Request from {self.client_address[0]}:{self.client_address[1]}: {self.requestline}")
+
         if self.path.rstrip("/") != "/status":
             self.send_error(404, "Not Found")
+            write_log("Response 404")
             return
 
         body = json.dumps(read_status(), ensure_ascii=False, indent=2).encode("utf-8")
@@ -55,18 +70,31 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+        write_log("Response 200 status.json")
 
     def log_message(self, fmt: str, *args: object) -> None:
-        print("%s - %s" % (self.address_string(), fmt % args))
+        return
+
+
+class StatusServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 def main() -> None:
-    server = ThreadingHTTPServer((HOST, PORT), StatusHandler)
+    server = StatusServer((HOST, PORT), StatusHandler)
+    write_log(f"Codex status server started on {HOST}:{PORT}")
     print(f"Codex status server: http://{HOST}:{PORT}/status")
     print(f"Status file: {STATUS_FILE}")
-    server.serve_forever()
+    print(f"Log file: {LOG_FILE}")
+    try:
+        server.serve_forever()
+    finally:
+        write_log("Codex status server stopped")
+        server.server_close()
 
 
 if __name__ == "__main__":

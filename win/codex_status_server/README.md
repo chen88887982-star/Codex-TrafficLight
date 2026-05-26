@@ -22,7 +22,9 @@ http://这台Windows的局域网IP:8765/status
 start-server.cmd
 ```
 
-如果 PowerShell 弹窗保持打开，说明服务正在运行。关闭窗口后服务停止。
+如果命令窗口保持打开，说明服务正在运行。关闭窗口后服务停止。
+
+服务现在默认使用 Python 标准库 HTTP 服务。Windows 需要能运行 `py -3` 或 `python`。如果提示未找到 Python，请先安装 Python 3，或把 Python 加入 PATH。
 
 第一次允许局域网访问时，Windows 防火墙可能会弹出提示，允许专用网络即可。
 
