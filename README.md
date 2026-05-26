@@ -32,6 +32,8 @@ install-rainmeter-skin.cmd
 CodexTrafficLight\CodexTrafficLight.ini
 ```
 
+右键主皮肤可以打开“设置”，设置页可以修改 `StatusUrl`，也可以显示调试信息。
+
 ## 配置 Rainmeter 读取地址
 
 安装后编辑：
@@ -62,6 +64,20 @@ StatusUrl=http://192.168.1.100:8765/status
 win\codex_status_server\start-server.cmd
 ```
 
+如果不想保留黑色窗口，可以双击：
+
+```text
+win\codex_status_server\start-server-background.cmd
+```
+
+后台启动后用下面这个脚本停止：
+
+```text
+win\codex_status_server\stop-server.cmd
+```
+
+如果使用黑色窗口版，不要在窗口里拖选文字。窗口标题出现“选择”时，Windows 会暂停控制台程序，Rainmeter 就会连接失败；按 `Esc` 可以退出选择状态。
+
 浏览器打开：
 
 ```text
@@ -73,6 +89,14 @@ http://127.0.0.1:8765/status
 ```text
 http://运行Codex电脑的IP:8765/status
 ```
+
+Windows 状态服务会写日志：
+
+```text
+win\codex_status_server\status-server.log
+```
+
+如果 Rainmeter 一直显示连接失败，先看这个日志里有没有 `Request from`。没有请求，说明 Rainmeter 没有访问到服务；有请求但仍失败，再看 Rainmeter 的调试信息和返回内容。
 
 切换状态：
 

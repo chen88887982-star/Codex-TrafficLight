@@ -6,6 +6,14 @@
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $StatusFile = Join-Path $ScriptDir "status.json"
+$LogFile = Join-Path $ScriptDir "status-server.log"
+
+function Write-StatusLog {
+  param([string]$Message)
+  $line = "[{0}] {1}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $Message
+  Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
+  Write-Host $Message
+}
 
 if (-not (Test-Path -LiteralPath $StatusFile)) {
   & (Join-Path $ScriptDir "set-status.ps1") idle | Out-Null
@@ -28,10 +36,11 @@ try {
   exit 1
 }
 
-Write-Host "Codex status server is running."
+Write-StatusLog "Codex status server started on ${HostName}:$Port"
 Write-Host "Same Windows: http://127.0.0.1:$Port/status"
 Write-Host "Other computer: http://THIS-WINDOWS-IP:$Port/status"
 Write-Host "Status file: $StatusFile"
+Write-Host "Log file: $LogFile"
 Write-Host "按 Ctrl+C 或关闭窗口停止服务。"
 
 try {
@@ -43,6 +52,7 @@ try {
       $stream.ReadTimeout = 1000
       $reader = [System.IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
       $requestLine = $reader.ReadLine()
+      Write-StatusLog "Request from $($client.Client.RemoteEndPoint): $requestLine"
 
       try {
         while ($true) {
@@ -60,8 +70,10 @@ try {
         try {
           $json = Get-Content -LiteralPath $StatusFile -Raw -Encoding UTF8
           $null = $json | ConvertFrom-Json
+          Write-StatusLog "Response 200 status.json"
         } catch {
           $json = '{"status":"error","message":"status.json 读取失败","updated_at":""}'
+          Write-StatusLog "Response 200 fallback error: $($_.Exception.Message)"
         }
 
         $body = [Text.Encoding]::UTF8.GetBytes($json)
@@ -69,6 +81,7 @@ try {
       } else {
         $body = [Text.Encoding]::UTF8.GetBytes("Not Found")
         $headers = "HTTP/1.1 404 Not Found`r`nContent-Type: text/plain; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+        Write-StatusLog "Response 404"
       }
 
       $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
@@ -79,6 +92,7 @@ try {
     }
   }
 } finally {
+  Write-StatusLog "Codex status server stopped"
   $listener.Stop()
 }
 

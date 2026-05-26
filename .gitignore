@@ -6,6 +6,7 @@ venv/
 status.local.json
 **/status.json
 *.log
+status-server.log
 *.tmp
 Thumbs.db
 desktop.ini
