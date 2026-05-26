@@ -6,9 +6,9 @@
 
 | 装备组合 | 状态服务运行位置 | Rainmeter 配置 |
 |---|---|---|
-| Win + Win 同一台电脑 | 本机 Windows | `http://127.0.0.1:8765/status` |
-| Win + 另一台 Win | 运行 Codex 的 Windows | `http://对方Windows-IP:8765/status` |
-| Win + Mac | 运行 Codex 的 Mac | `http://Mac-IP:8765/status` |
+| Win + Win 同一台电脑 | 本机 Windows | `http://127.0.0.1:8765/rainmeter` |
+| Win + 另一台 Win | 运行 Codex 的 Windows | `http://对方Windows-IP:8765/rainmeter` |
+| Win + Mac | 运行 Codex 的 Mac | `http://Mac-IP:8765/rainmeter` |
 
 Rainmeter 只负责读取 `StatusUrl`。所以两套装备通用的关键就是：哪台电脑运行 Codex，就在哪台电脑启动状态服务。
 
@@ -32,35 +32,31 @@ install-rainmeter-skin.cmd
 CodexTrafficLight\CodexTrafficLight.ini
 ```
 
-右键主皮肤可以打开“设置”，设置页可以修改 `StatusUrl`，也可以显示调试信息。
+右键主皮肤可以打开“设置”。设置页会显示当前接口地址，可以一键设为本机 Windows，也可以手动填写远程电脑地址、调整背景透明度、显示调试信息。
 
 ## 配置 Rainmeter 读取地址
 
-安装后编辑：
-
-```text
-%USERPROFILE%\Documents\Rainmeter\Skins\CodexTrafficLight\@Resources\variables.inc
-```
-
-同一台 Windows 使用默认值：
+默认配置适合 Codex 和 Rainmeter 都在同一台 Windows：
 
 ```ini
-StatusUrl=http://127.0.0.1:8765/status
+StatusUrl=http://127.0.0.1:8765/rainmeter
 ```
 
-跨电脑时改成运行 Codex 那台电脑的局域网 IP：
+跨电脑时，在设置页把地址改成运行 Codex 那台电脑的局域网 IP：
 
 ```ini
-StatusUrl=http://192.168.2.112:8765/rainmeter
+StatusUrl=http://对方IP:8765/rainmeter
 ```
 
-这套 Win + Win 设备的 JSON 验证地址是：
+浏览器验证服务是否可访问时，用 `/status`：
 
 ```text
-http://192.168.2.112:8765/status
+http://对方IP:8765/status
 ```
 
-保存后，在 Rainmeter 管理器里刷新这个皮肤。
+查看 Windows 本机 IP：在运行 Codex 的 Windows 上打开命令提示符，输入 `ipconfig`，找当前联网网卡下的 `IPv4 地址`，通常是 `192.168.x.x`、`10.x.x.x` 或 `172.16-31.x.x`。
+
+查看 Mac 本机 IP：打开“系统设置” -> “网络”，点当前正在使用的 Wi-Fi 或以太网，查看 IP 地址；也可以在终端运行 `ipconfig getifaddr en0`，有线网络可能是 `en1` 或其他网卡。
 
 ## Codex 在 Windows 时
 
