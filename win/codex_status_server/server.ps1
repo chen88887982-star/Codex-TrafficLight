@@ -55,11 +55,21 @@ try {
         $requestLine = $reader.ReadLine()
       } catch {
         Write-StatusLog "Ignored connection from $($client.Client.RemoteEndPoint): request line timeout"
+        $body = [Text.Encoding]::UTF8.GetBytes("Request Timeout")
+        $headers = "HTTP/1.1 408 Request Timeout`r`nContent-Type: text/plain; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+        $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
+        $stream.Write($headerBytes, 0, $headerBytes.Length)
+        $stream.Write($body, 0, $body.Length)
         continue
       }
 
       if ([string]::IsNullOrWhiteSpace($requestLine)) {
         Write-StatusLog "Ignored connection from $($client.Client.RemoteEndPoint): empty request"
+        $body = [Text.Encoding]::UTF8.GetBytes("Bad Request")
+        $headers = "HTTP/1.1 400 Bad Request`r`nContent-Type: text/plain; charset=utf-8`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+        $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
+        $stream.Write($headerBytes, 0, $headerBytes.Length)
+        $stream.Write($body, 0, $body.Length)
         continue
       }
 
