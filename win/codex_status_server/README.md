@@ -37,10 +37,12 @@ start-server.cmd
 自动状态规则：
 
 - `task_started`：写入 `running`，红灯
-- 工具调用：保持 `running`，红灯
+- 生成回复、工具调用、工具结果：保持 `running`，红灯
 - 等待确认相关事件：写入 `waiting`，黄灯
 - `task_complete`：写入 `success`，绿灯
 - 完成 45 秒后：自动回到 `idle`，灰灯
+
+默认监控间隔是 0.25 秒，Rainmeter 默认 1 秒读取一次 `/rainmeter`。
 
 如果只想手动切换，可以用下面方式关闭自动监听：
 

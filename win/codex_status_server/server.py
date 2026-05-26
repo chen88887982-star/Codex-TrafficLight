@@ -20,6 +20,8 @@ AUTO_MONITOR = os.environ.get("AUTO_MONITOR_CODEX", "1") != "0"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
+MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.25"))
+RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
 
 DEFAULT_STATUS = {
     "status": "idle",
@@ -146,7 +148,7 @@ def iter_recent_session_files() -> list[Path]:
     return files[:5]
 
 
-def apply_codex_event(event: dict[str, object]) -> bool:
+def apply_codex_event(event: dict[str, object]) -> str:
     event_type = str(event.get("type", ""))
     payload = event.get("payload", {})
     if not isinstance(payload, dict):
@@ -155,34 +157,51 @@ def apply_codex_event(event: dict[str, object]) -> bool:
     payload_type = str(payload.get("type", ""))
     if event_type == "event_msg" and payload_type in {"approval_request", "permission_request", "user_input_requested"}:
         write_status("waiting", "Codex 等待用户确认")
-        return True
+        return "waiting"
 
     if event_type == "response_item" and payload_type == "function_call":
         arguments = str(payload.get("arguments", ""))
         if "require_escalated" in arguments:
             write_status("waiting", "Codex 等待用户确认")
-            return True
+            return "waiting"
 
     if event_type == "event_msg" and payload_type == "task_started":
         write_status("running", "Codex 正在处理任务")
-        return True
+        return "running"
 
     if event_type == "response_item" and payload_type == "function_call":
         name = str(payload.get("name", "工具"))
         write_status("running", f"Codex 正在执行 {name}")
-        return True
+        return "running"
+
+    if event_type == "response_item" and payload_type == "function_call_output":
+        write_status("running", "Codex 正在处理工具结果")
+        return "running"
+
+    if event_type == "response_item" and payload_type in {"reasoning", "message"}:
+        phase = str(payload.get("phase", ""))
+        if phase != "final_answer":
+            write_status("running", "Codex 正在生成回复")
+            return "running"
+
+    if event_type == "event_msg" and payload_type == "agent_message":
+        phase = str(payload.get("phase", ""))
+        if phase != "final_answer":
+            write_status("running", "Codex 正在处理任务")
+            return "running"
 
     if event_type == "event_msg" and payload_type == "task_complete":
         write_status("success", "Codex 任务完成")
-        return True
+        return "success"
 
-    return False
+    return ""
 
 
 def codex_status_monitor() -> None:
     write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
     positions: dict[Path, int] = {}
     last_success_at = 0.0
+    last_running_at = 0.0
     initialized = False
 
     while True:
@@ -197,7 +216,7 @@ def codex_status_monitor() -> None:
                     positions[path] = path.stat().st_size
                 write_status("idle", "Codex 空闲")
                 initialized = True
-                time.sleep(1)
+                time.sleep(MONITOR_INTERVAL_SECONDS)
                 continue
 
             for path in files:
@@ -217,20 +236,24 @@ def codex_status_monitor() -> None:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if apply_codex_event(event):
-                        event_payload = event.get("payload", {})
-                        if isinstance(event_payload, dict) and event_payload.get("type") == "task_complete":
-                            last_success_at = time.time()
+                    applied_status = apply_codex_event(event)
+                    if applied_status in {"running", "waiting"}:
+                        last_running_at = time.time()
+                    elif applied_status == "success":
+                        last_success_at = time.time()
 
             current = read_status()
             if current.get("status") == "success" and last_success_at and time.time() - last_success_at > SUCCESS_HOLD_SECONDS:
                 write_status("idle", "Codex 空闲")
                 last_success_at = 0.0
+            elif current.get("status") == "running" and last_running_at and time.time() - last_running_at > RUNNING_STALE_SECONDS:
+                write_status("idle", "Codex 空闲")
+                last_running_at = 0.0
 
         except Exception as exc:
             write_log(f"Codex auto monitor error: {exc}")
 
-        time.sleep(1)
+        time.sleep(MONITOR_INTERVAL_SECONDS)
 
 
 def main() -> int:
