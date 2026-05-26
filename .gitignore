@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+status.local.json
+*.log
+*.tmp
+Thumbs.db
+desktop.ini

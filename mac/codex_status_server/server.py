@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+
+BASE_DIR = Path(__file__).resolve().parent
+STATUS_FILE = BASE_DIR / "status.json"
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8765"))
+
+DEFAULT_STATUS = {
+    "status": "idle",
+    "message": "Codex 空闲",
+    "updated_at": "1970-01-01T00:00:00+00:00",
+}
+
+
+def read_status() -> dict[str, str]:
+    if not STATUS_FILE.exists():
+        return DEFAULT_STATUS
+
+    try:
+        data = json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {
+            "status": "error",
+            "message": "status.json 读取失败",
+            "updated_at": DEFAULT_STATUS["updated_at"],
+        }
+
+    status = str(data.get("status", "idle"))
+    if status not in {"idle", "running", "waiting", "success", "error"}:
+        status = "error"
+
+    return {
+        "status": status,
+        "message": str(data.get("message", "")),
+        "updated_at": str(data.get("updated_at", "")),
+    }
+
+
+class StatusHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path.rstrip("/") != "/status":
+            self.send_error(404, "Not Found")
+            return
+
+        body = json.dumps(read_status(), ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        print("%s - %s" % (self.address_string(), fmt % args))
+
+
+def main() -> None:
+    server = ThreadingHTTPServer((HOST, PORT), StatusHandler)
+    print(f"Codex status server: http://{HOST}:{PORT}/status")
+    print(f"Status file: {STATUS_FILE}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
