@@ -153,11 +153,15 @@ def apply_codex_event(event: dict[str, object]) -> bool:
         payload = {}
 
     payload_type = str(payload.get("type", ""))
-    line_text = json.dumps(event, ensure_ascii=False)
-
-    if "approval" in line_text or "permission" in line_text or "确认" in line_text:
+    if event_type == "event_msg" and payload_type in {"approval_request", "permission_request", "user_input_requested"}:
         write_status("waiting", "Codex 等待用户确认")
         return True
+
+    if event_type == "response_item" and payload_type == "function_call":
+        arguments = str(payload.get("arguments", ""))
+        if "require_escalated" in arguments:
+            write_status("waiting", "Codex 等待用户确认")
+            return True
 
     if event_type == "event_msg" and payload_type == "task_started":
         write_status("running", "Codex 正在处理任务")
@@ -179,6 +183,7 @@ def codex_status_monitor() -> None:
     write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
     positions: dict[Path, int] = {}
     last_success_at = 0.0
+    initialized = False
 
     while True:
         try:
@@ -187,10 +192,17 @@ def codex_status_monitor() -> None:
                 time.sleep(1)
                 continue
 
+            if not initialized:
+                for path in files:
+                    positions[path] = path.stat().st_size
+                write_status("idle", "Codex 空闲")
+                initialized = True
+                time.sleep(1)
+                continue
+
             for path in files:
                 if path not in positions:
-                    file_age = time.time() - path.stat().st_mtime
-                    positions[path] = 0 if file_age < 120 else path.stat().st_size
+                    positions[path] = 0
 
                 with path.open("r", encoding="utf-8", errors="replace") as fh:
                     fh.seek(positions[path])
