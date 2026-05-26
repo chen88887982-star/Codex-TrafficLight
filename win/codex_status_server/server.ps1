@@ -49,7 +49,7 @@ try {
 
     try {
       $stream = $client.GetStream()
-      $stream.ReadTimeout = 3000
+      $stream.ReadTimeout = 250
       $reader = [System.IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
       try {
         $requestLine = $reader.ReadLine()
