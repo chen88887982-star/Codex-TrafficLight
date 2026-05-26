@@ -49,9 +49,20 @@ try {
 
     try {
       $stream = $client.GetStream()
-      $stream.ReadTimeout = 1000
+      $stream.ReadTimeout = 3000
       $reader = [System.IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
-      $requestLine = $reader.ReadLine()
+      try {
+        $requestLine = $reader.ReadLine()
+      } catch {
+        Write-StatusLog "Ignored connection from $($client.Client.RemoteEndPoint): request line timeout"
+        continue
+      }
+
+      if ([string]::IsNullOrWhiteSpace($requestLine)) {
+        Write-StatusLog "Ignored connection from $($client.Client.RemoteEndPoint): empty request"
+        continue
+      }
+
       Write-StatusLog "Request from $($client.Client.RemoteEndPoint): $requestLine"
 
       try {
@@ -87,6 +98,8 @@ try {
       $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
       $stream.Write($headerBytes, 0, $headerBytes.Length)
       $stream.Write($body, 0, $body.Length)
+    } catch {
+      Write-StatusLog "Client handling error from $($client.Client.RemoteEndPoint): $($_.Exception.Message)"
     } finally {
       $client.Close()
     }
