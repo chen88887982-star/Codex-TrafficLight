@@ -6,3 +6,6 @@
 *.inc text eol=crlf
 *.md text eol=crlf
 *.json text eol=lf
+rainmeter/**/*.ini -text
+rainmeter/**/*.inc -text
+win/**/*.ps1 -text

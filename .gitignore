@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 status.local.json
+**/status.json
 *.log
 *.tmp
 Thumbs.db
