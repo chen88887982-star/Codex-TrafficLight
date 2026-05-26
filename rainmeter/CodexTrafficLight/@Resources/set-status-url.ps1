@@ -9,9 +9,9 @@ $VariablesFile = Join-Path $ScriptDir "variables.inc"
 if ([string]::IsNullOrWhiteSpace($Url)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
   $Url = [Microsoft.VisualBasic.Interaction]::InputBox(
-    "请输入完整状态接口地址，例如 http://192.168.2.112:8765/status",
+    "请输入完整状态接口地址，例如 http://192.168.2.112:8765/rainmeter",
     "Codex 交通灯状态接口",
-    "http://192.168.2.112:8765/status"
+    "http://192.168.2.112:8765/rainmeter"
   )
 }
 
@@ -33,4 +33,5 @@ if ($content -match '(?m)^StatusUrl=.*$') {
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
+
 

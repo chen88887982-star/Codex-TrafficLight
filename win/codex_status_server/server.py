@@ -60,7 +60,34 @@ class StatusHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         write_log(f"Request from {self.client_address[0]}:{self.client_address[1]}: {self.requestline}")
 
-        if self.path.rstrip("/") != "/status":
+        path = self.path.rstrip("/")
+        if path == "/rainmeter":
+            status_data = read_status()
+            status_codes = {
+                "idle": "0",
+                "running": "1",
+                "waiting": "2",
+                "success": "3",
+                "error": "4",
+            }
+            text = "{code}|{message}|{updated_at}".format(
+                code=status_codes.get(status_data["status"], "4"),
+                message=status_data["message"].replace("|", "/").replace("\r", " ").replace("\n", " "),
+                updated_at=status_data["updated_at"].replace("|", "/").replace("\r", " ").replace("\n", " "),
+            )
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            write_log("Response 200 rainmeter")
+            return
+
+        if path != "/status":
             body = b"Not Found"
             self.send_response(404)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
