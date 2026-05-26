@@ -28,6 +28,27 @@ start-server.cmd
 
 第一次允许局域网访问时，Windows 防火墙可能会弹出提示，允许专用网络即可。
 
+服务会自动监听当前用户的 Codex 会话日志：
+
+```text
+%USERPROFILE%\.codex\sessions
+```
+
+自动状态规则：
+
+- `task_started`：写入 `running`，红灯
+- 工具调用：保持 `running`，红灯
+- 等待确认相关事件：写入 `waiting`，黄灯
+- `task_complete`：写入 `success`，绿灯
+- 完成 45 秒后：自动回到 `idle`，灰灯
+
+如果只想手动切换，可以用下面方式关闭自动监听：
+
+```cmd
+set AUTO_MONITOR_CODEX=0
+start-server.cmd
+```
+
 ## 切换状态
 
 在 PowerShell 中执行：

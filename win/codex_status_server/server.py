@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,12 +16,19 @@ STATUS_FILE = BASE_DIR / "status.json"
 LOG_FILE = BASE_DIR / "status-server.log"
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
+AUTO_MONITOR = os.environ.get("AUTO_MONITOR_CODEX", "1") != "0"
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
+SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
 
 DEFAULT_STATUS = {
     "status": "idle",
     "message": "Codex 空闲",
     "updated_at": "1970-01-01T00:00:00+00:00",
 }
+
+
+status_lock = threading.Lock()
 
 
 def write_log(message: str) -> None:
@@ -29,12 +38,23 @@ def write_log(message: str) -> None:
         fh.write(line + "\n")
 
 
+def write_status(status: str, message: str) -> None:
+    payload = {
+        "status": status,
+        "message": message,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    with status_lock:
+        STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def read_status() -> dict[str, str]:
     if not STATUS_FILE.exists():
         return DEFAULT_STATUS
 
     try:
-        data = json.loads(STATUS_FILE.read_text(encoding="utf-8-sig"))
+        with status_lock:
+            data = json.loads(STATUS_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         write_log(f"status.json read failed: {exc}")
         return {
@@ -118,6 +138,89 @@ class StatusServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+def iter_recent_session_files() -> list[Path]:
+    if not CODEX_SESSIONS_DIR.exists():
+        return []
+    files = list(CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"))
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files[:5]
+
+
+def apply_codex_event(event: dict[str, object]) -> bool:
+    event_type = str(event.get("type", ""))
+    payload = event.get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {}
+
+    payload_type = str(payload.get("type", ""))
+    line_text = json.dumps(event, ensure_ascii=False)
+
+    if "approval" in line_text or "permission" in line_text or "确认" in line_text:
+        write_status("waiting", "Codex 等待用户确认")
+        return True
+
+    if event_type == "event_msg" and payload_type == "task_started":
+        write_status("running", "Codex 正在处理任务")
+        return True
+
+    if event_type == "response_item" and payload_type == "function_call":
+        name = str(payload.get("name", "工具"))
+        write_status("running", f"Codex 正在执行 {name}")
+        return True
+
+    if event_type == "event_msg" and payload_type == "task_complete":
+        write_status("success", "Codex 任务完成")
+        return True
+
+    return False
+
+
+def codex_status_monitor() -> None:
+    write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
+    positions: dict[Path, int] = {}
+    last_success_at = 0.0
+
+    while True:
+        try:
+            files = iter_recent_session_files()
+            if not files:
+                time.sleep(1)
+                continue
+
+            for path in files:
+                if path not in positions:
+                    file_age = time.time() - path.stat().st_mtime
+                    positions[path] = 0 if file_age < 120 else path.stat().st_size
+
+                with path.open("r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(positions[path])
+                    lines = fh.readlines()
+                    positions[path] = fh.tell()
+
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if apply_codex_event(event):
+                        event_payload = event.get("payload", {})
+                        if isinstance(event_payload, dict) and event_payload.get("type") == "task_complete":
+                            last_success_at = time.time()
+
+            current = read_status()
+            if current.get("status") == "success" and last_success_at and time.time() - last_success_at > SUCCESS_HOLD_SECONDS:
+                write_status("idle", "Codex 空闲")
+                last_success_at = 0.0
+
+        except Exception as exc:
+            write_log(f"Codex auto monitor error: {exc}")
+
+        time.sleep(1)
+
+
 def main() -> int:
     if not STATUS_FILE.exists():
         STATUS_FILE.write_text(json.dumps(DEFAULT_STATUS, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -133,6 +236,11 @@ def main() -> int:
     print(f"Other computer: http://THIS-WINDOWS-IP:{PORT}/status")
     print(f"Status file: {STATUS_FILE}")
     print(f"Log file: {LOG_FILE}")
+    if AUTO_MONITOR:
+        threading.Thread(target=codex_status_monitor, name="codex-status-monitor", daemon=True).start()
+        print(f"Auto monitor: {CODEX_SESSIONS_DIR}")
+    else:
+        print("Auto monitor: disabled")
     print("按 Ctrl+C 或关闭窗口停止服务。")
 
     try:

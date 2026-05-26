@@ -72,6 +72,8 @@ win\codex_status_server\start-server.cmd
 
 Windows 状态服务现在默认使用 Python 标准库 HTTP 服务。运行电脑需要安装 Python 3，并且命令行能识别 `py -3` 或 `python`。
 
+Windows 状态服务会自动监听当前用户的 Codex 会话日志，并根据对话任务状态更新灯光：任务开始为红灯，任务完成为绿灯，完成 45 秒后回到灰灯。
+
 如果不想保留黑色窗口，可以双击：
 
 ```text
