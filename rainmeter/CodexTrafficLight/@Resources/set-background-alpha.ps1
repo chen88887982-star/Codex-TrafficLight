@@ -9,9 +9,9 @@ $VariablesFile = Join-Path $ScriptDir "variables.inc"
 if ([string]::IsNullOrWhiteSpace($Percent)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
   $Percent = [Microsoft.VisualBasic.Interaction]::InputBox(
-    "请输入背景不透明度百分比，范围 0-100。0 表示完全透明，100 表示最不透明。",
-    "Codex 交通灯背景透明度",
-    "80"
+    "请输入玻璃背景不透明度百分比，范围 0-100。0 表示完全透明，100 表示最不透明。",
+    "Codex 交通灯玻璃背景",
+    "55"
   )
 }
 
@@ -34,8 +34,8 @@ if ($value -gt 100) {
 }
 
 $alpha = [int][Math]::Round($value * 255 / 100)
-$strokeAlpha = [int][Math]::Round($value * 220 / 100)
-$highlightAlpha = [int][Math]::Round($value * 12 / 100)
+$strokeAlpha = [int][Math]::Round($value * 240 / 100)
+$highlightAlpha = [int][Math]::Round($value * 32 / 100)
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
 
 if ($content -match '(?m)^BackgroundOpacity=.*$') {
@@ -51,9 +51,9 @@ if ($content -match '(?m)^BackgroundAlpha=.*$') {
 }
 
 if ($content -match '(?m)^BackgroundColor=.*$') {
-  $content = $content -replace '(?m)^BackgroundColor=.*$', "BackgroundColor=18,20,24,$alpha"
+  $content = $content -replace '(?m)^BackgroundColor=.*$', "BackgroundColor=18,28,34,$alpha"
 } else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundColor=18,20,24,$alpha`r`n"
+  $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundColor=18,28,34,$alpha`r`n"
 }
 
 if ($content -match '(?m)^PanelStrokeAlpha=.*$') {
@@ -63,9 +63,9 @@ if ($content -match '(?m)^PanelStrokeAlpha=.*$') {
 }
 
 if ($content -match '(?m)^PanelStrokeColor=.*$') {
-  $content = $content -replace '(?m)^PanelStrokeColor=.*$', "PanelStrokeColor=70,76,86,$strokeAlpha"
+  $content = $content -replace '(?m)^PanelStrokeColor=.*$', "PanelStrokeColor=120,210,230,$strokeAlpha"
 } else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1PanelStrokeColor=70,76,86,$strokeAlpha`r`n"
+  $content = $content -replace '(\[Variables\]\s*)', "`$1PanelStrokeColor=120,210,230,$strokeAlpha`r`n"
 }
 
 if ($content -match '(?m)^BackgroundHighlightAlpha=.*$') {
@@ -75,9 +75,9 @@ if ($content -match '(?m)^BackgroundHighlightAlpha=.*$') {
 }
 
 if ($content -match '(?m)^BackgroundHighlightColor=.*$') {
-  $content = $content -replace '(?m)^BackgroundHighlightColor=.*$', "BackgroundHighlightColor=255,255,255,$highlightAlpha"
+  $content = $content -replace '(?m)^BackgroundHighlightColor=.*$', "BackgroundHighlightColor=160,230,255,$highlightAlpha"
 } else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundHighlightColor=255,255,255,$highlightAlpha`r`n"
+  $content = $content -replace '(\[Variables\]\s*)', "`$1BackgroundHighlightColor=160,230,255,$highlightAlpha`r`n"
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
