@@ -40,14 +40,20 @@ try {
 
     try {
       $stream = $client.GetStream()
+      $stream.ReadTimeout = 1000
       $reader = [System.IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
       $requestLine = $reader.ReadLine()
 
-      while ($reader.Peek() -gt -1) {
-        $line = $reader.ReadLine()
-        if ([string]::IsNullOrEmpty($line)) {
-          break
+      try {
+        while ($true) {
+          $line = $reader.ReadLine()
+          if ([string]::IsNullOrEmpty($line)) {
+            break
+          }
         }
+      } catch {
+        # Some clients keep the connection open. A short timeout is enough once
+        # the request line has been read.
       }
 
       if ($requestLine -match "^GET\s+/status/?\s+HTTP/") {
