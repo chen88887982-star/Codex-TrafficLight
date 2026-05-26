@@ -16,10 +16,16 @@ http://这台Windows的局域网IP:8765/status
 
 ## 启动服务
 
-双击：
+先打开项目文件夹。如果项目在桌面或下载目录，先在资源管理器里进入：
 
 ```text
-start-server.cmd
+Codex-TrafficLight
+```
+
+然后双击：
+
+```text
+win\codex_status_server\start-server.cmd
 ```
 
 如果命令窗口保持打开，说明服务正在运行。关闭窗口后服务停止。
@@ -53,7 +59,19 @@ start-server.cmd
 
 ## 切换状态
 
-在 PowerShell 中执行：
+在 PowerShell 中执行前，先进入这个目录：
+
+```powershell
+cd 你的项目路径\Codex-TrafficLight\win\codex_status_server
+```
+
+例如项目在桌面：
+
+```powershell
+cd $HOME\Desktop\Codex-TrafficLight\win\codex_status_server
+```
+
+然后执行：
 
 ```powershell
 .\set-status.ps1 idle

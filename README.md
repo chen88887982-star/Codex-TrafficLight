@@ -14,7 +14,7 @@ Rainmeter 只负责读取 `StatusUrl`。所以两套装备通用的关键就是�
 
 ## Windows 端安装皮肤
 
-在 Rainmeter 所在的 Windows 上双击：
+在 Rainmeter 所在的 Windows 上，先打开项目文件夹，再双击：
 
 ```text
 install-rainmeter-skin.cmd
@@ -62,21 +62,29 @@ http://对方IP:8765/status
 
 ### 方式 A：Codex 和 Rainmeter 在同一台 Windows
 
-1. 在这台 Windows 上启动状态服务，双击：
+1. 打开项目文件夹。
+
+如果项目放在桌面，先在资源管理器里进入：
+
+```text
+Codex-TrafficLight
+```
+
+2. 在这台 Windows 上启动状态服务，双击：
 
 ```text
 win\codex_status_server\start-server.cmd
 ```
 
-2. 启动后不要关闭黑色命令窗口。
+3. 启动后不要关闭黑色命令窗口。窗口开着，就代表状态服务还在运行。
 
-3. Rainmeter 设置页里填：
+4. Rainmeter 设置页里填：
 
 ```text
 http://127.0.0.1:8765/rainmeter
 ```
 
-4. 浏览器验证：
+5. 浏览器验证：
 
 ```text
 http://127.0.0.1:8765/status
@@ -84,13 +92,15 @@ http://127.0.0.1:8765/status
 
 ### 方式 B：Codex 在一台 Windows，Rainmeter 在另一台 Windows
 
-1. 在运行 Codex 的 Windows 上启动状态服务，双击：
+1. 在运行 Codex 的 A 电脑上打开项目文件夹。
+
+2. 在 A 电脑上启动状态服务，双击：
 
 ```text
 win\codex_status_server\start-server.cmd
 ```
 
-2. 在运行 Codex 的 Windows 上查看本机 IP。
+3. 在 A 电脑上查看本机 IP。
 
 打开命令提示符，输入：
 
@@ -104,7 +114,7 @@ ipconfig
 192.168.2.112
 ```
 
-3. 在 Rainmeter 那台 Windows 的浏览器验证：
+4. 在 Rainmeter 那台 B 电脑的浏览器验证：
 
 ```text
 http://运行Codex电脑的IP:8765/status
@@ -116,7 +126,7 @@ http://运行Codex电脑的IP:8765/status
 http://192.168.2.112:8765/status
 ```
 
-4. 在 Rainmeter 设置页填：
+5. 在 B 电脑的 Rainmeter 设置页填：
 
 ```text
 http://运行Codex电脑的IP:8765/rainmeter
@@ -195,25 +205,53 @@ win\codex_status_server\status-server.log
 
 Rainmeter 仍然运行在 Windows 上；Mac 负责运行 Codex 和状态服务。
 
-1. 把这个目录复制到 Mac：
+1. 确认项目已经在 Mac 上。
+
+如果你是用 Git 克隆的，项目一般在类似下面的位置：
 
 ```text
-mac/codex_status_server
+/Users/你的用户名/Documents/Codex-TrafficLight
 ```
 
-2. 打开 Mac 终端，进入这个目录：
+2. 打开 Mac 终端，先进入 Mac 服务目录。
+
+如果项目就在当前这台 Mac 的 Documents 里，可以直接复制这一行：
 
 ```bash
-cd /你的路径/codex_status_server
+cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 ```
 
-3. 第一次运行前给脚本执行权限：
+如果你的项目在别的位置，就进入你自己的路径，例如：
+
+```text
+cd /你的路径/Codex-TrafficLight/mac/codex_status_server
+```
+
+3. 确认自己进对目录。
+
+```bash
+ls
+```
+
+正常应该能看到：
+
+```text
+README.md
+server.py
+set-status.sh
+start.command
+status.example.json
+```
+
+4. 第一次运行前给脚本执行权限：
 
 ```bash
 chmod +x set-status.sh start.command
 ```
 
-4. 启动服务：
+如果提示 `No such file or directory`，说明你还没有进入 `mac/codex_status_server` 这个目录。先重新执行第 2 步的 `cd ...`。
+
+5. 启动服务：
 
 ```bash
 ./start.command
@@ -221,7 +259,15 @@ chmod +x set-status.sh start.command
 
 终端窗口不要关闭。
 
-5. 获取 Mac 本机 IP。
+6. 先在 Mac 本机验证服务：
+
+```bash
+curl http://127.0.0.1:8765/status
+```
+
+能看到 JSON 内容，说明 Mac 服务已经启动成功。
+
+7. 获取 Mac 本机 IP。
 
 图形界面：
 
@@ -241,7 +287,7 @@ ipconfig getifaddr en0
 ipconfig getifaddr en1
 ```
 
-6. 在 Windows 浏览器验证：
+8. 在 Windows 浏览器验证：
 
 ```text
 http://Mac-IP:8765/status
@@ -253,7 +299,7 @@ http://Mac-IP:8765/status
 http://192.168.2.50:8765/status
 ```
 
-7. 在 Windows Rainmeter 设置页填：
+9. 在 Windows Rainmeter 设置页填：
 
 ```text
 http://Mac-IP:8765/rainmeter
@@ -266,6 +312,14 @@ http://192.168.2.50:8765/rainmeter
 ```
 
 ### Mac 端手动切换状态
+
+手动切换前，也要先进入 Mac 服务目录：
+
+```bash
+cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
+```
+
+然后执行：
 
 ```bash
 ./set-status.sh idle
