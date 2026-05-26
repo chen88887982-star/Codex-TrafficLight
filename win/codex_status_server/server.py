@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -115,7 +116,7 @@ def remaining_percent(used_percent: object) -> str:
         remaining = 100 - float(used_percent)
     except (TypeError, ValueError):
         return "--"
-    remaining = max(0, min(100, round(remaining)))
+    remaining = max(0, min(100, math.floor(remaining)))
     return f"{remaining}%"
 
 
