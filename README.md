@@ -60,13 +60,77 @@ http://对方IP:8765/status
 
 ## Codex 在 Windows 时
 
-在运行 Codex 的 Windows 上双击：
+### 方式 A：Codex 和 Rainmeter 在同一台 Windows
+
+1. 在这台 Windows 上启动状态服务，双击：
 
 ```text
 win\codex_status_server\start-server.cmd
 ```
 
-Windows 状态服务现在默认使用 Python 标准库 HTTP 服务。运行电脑需要安装 Python 3，并且命令行能识别 `py -3` 或 `python`。
+2. 启动后不要关闭黑色命令窗口。
+
+3. Rainmeter 设置页里填：
+
+```text
+http://127.0.0.1:8765/rainmeter
+```
+
+4. 浏览器验证：
+
+```text
+http://127.0.0.1:8765/status
+```
+
+### 方式 B：Codex 在一台 Windows，Rainmeter 在另一台 Windows
+
+1. 在运行 Codex 的 Windows 上启动状态服务，双击：
+
+```text
+win\codex_status_server\start-server.cmd
+```
+
+2. 在运行 Codex 的 Windows 上查看本机 IP。
+
+打开命令提示符，输入：
+
+```cmd
+ipconfig
+```
+
+找到当前正在联网的网卡，例如 `无线局域网适配器 WLAN` 或 `以太网适配器 以太网`，复制里面的 `IPv4 地址`，一般长这样：
+
+```text
+192.168.2.112
+```
+
+3. 在 Rainmeter 那台 Windows 的浏览器验证：
+
+```text
+http://运行Codex电脑的IP:8765/status
+```
+
+例如：
+
+```text
+http://192.168.2.112:8765/status
+```
+
+4. 在 Rainmeter 设置页填：
+
+```text
+http://运行Codex电脑的IP:8765/rainmeter
+```
+
+例如：
+
+```text
+http://192.168.2.112:8765/rainmeter
+```
+
+### Windows 端说明
+
+Windows 状态服务默认使用 Python 标准库 HTTP 服务。运行电脑需要安装 Python 3，并且命令行能识别 `py -3` 或 `python`。
 
 Windows 状态服务会自动监听当前用户的 Codex 会话日志，并根据对话任务状态更新灯光：任务开始、生成回复、执行工具或处理工具结果都会立即保持红灯，任务完成为绿灯，完成 45 秒后回到灰灯。
 
@@ -92,12 +156,6 @@ win\codex_status_server\stop-server.cmd
 ```
 
 如果使用黑色窗口版，不要在窗口里拖选文字。窗口标题出现“选择”时，Windows 会暂停控制台程序，Rainmeter 就会连接失败；按 `Esc` 可以退出选择状态。
-
-浏览器打开：
-
-```text
-http://127.0.0.1:8765/status
-```
 
 查看剩余额度接口：
 
@@ -133,20 +191,81 @@ win\codex_status_server\status-server.log
 
 ## Codex 在 Mac 时
 
-把这个目录复制到 Mac：
+### Mac 作为 Codex 状态服务电脑
+
+Rainmeter 仍然运行在 Windows 上；Mac 负责运行 Codex 和状态服务。
+
+1. 把这个目录复制到 Mac：
 
 ```text
 mac/codex_status_server
 ```
 
-在 Mac 终端执行：
+2. 打开 Mac 终端，进入这个目录：
+
+```bash
+cd /你的路径/codex_status_server
+```
+
+3. 第一次运行前给脚本执行权限：
 
 ```bash
 chmod +x set-status.sh start.command
+```
+
+4. 启动服务：
+
+```bash
 ./start.command
 ```
 
-切换状态：
+终端窗口不要关闭。
+
+5. 获取 Mac 本机 IP。
+
+图形界面：
+
+```text
+系统设置 -> 网络 -> 当前正在使用的 Wi-Fi 或以太网
+```
+
+终端方式，Wi-Fi 通常用：
+
+```bash
+ipconfig getifaddr en0
+```
+
+如果没有输出，可以试：
+
+```bash
+ipconfig getifaddr en1
+```
+
+6. 在 Windows 浏览器验证：
+
+```text
+http://Mac-IP:8765/status
+```
+
+例如：
+
+```text
+http://192.168.2.50:8765/status
+```
+
+7. 在 Windows Rainmeter 设置页填：
+
+```text
+http://Mac-IP:8765/rainmeter
+```
+
+例如：
+
+```text
+http://192.168.2.50:8765/rainmeter
+```
+
+### Mac 端手动切换状态
 
 ```bash
 ./set-status.sh idle
@@ -156,13 +275,7 @@ chmod +x set-status.sh start.command
 ./set-status.sh error "任务失败"
 ```
 
-Windows 浏览器打开：
-
-```text
-http://Mac-IP:8765/status
-```
-
-能看到 JSON 后，Rainmeter 就能自动变灯。
+能看到 JSON 后，Rainmeter 就能自动变灯。Windows 和 Mac 需要在同一局域网，或者通过 Tailscale、ZeroTier、VPN 等方式互通。
 
 ## 状态含义
 
