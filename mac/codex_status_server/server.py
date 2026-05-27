@@ -27,6 +27,8 @@ DEFAULT_STATUS = {
     "status": "idle",
     "message": "Codex 空闲",
     "updated_at": "1970-01-01T00:00:00+00:00",
+    "running_since": 0.0,
+    "last_elapsed_seconds": 0,
 }
 
 DEFAULT_USAGE = {
@@ -51,16 +53,35 @@ def write_log(message: str) -> None:
 
 
 def write_status(status: str, message: str) -> None:
+    now = time.time()
+    previous = read_status() if STATUS_FILE.exists() else DEFAULT_STATUS
+    running_since = float(previous.get("running_since", 0) or 0)
+    last_elapsed_seconds = int(float(previous.get("last_elapsed_seconds", 0) or 0))
+
+    if status in {"running", "waiting"}:
+        if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
+            running_since = now
+    elif status == "success":
+        if running_since > 0:
+            last_elapsed_seconds = max(0, int(now - running_since))
+        running_since = 0.0
+    elif status in {"idle", "error"}:
+        running_since = 0.0
+        if status == "idle":
+            last_elapsed_seconds = 0
+
     payload = {
         "status": status,
         "message": message,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "running_since": running_since,
+        "last_elapsed_seconds": last_elapsed_seconds,
     }
     with status_lock:
         STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def read_status() -> dict[str, str]:
+def read_status() -> dict[str, object]:
     if not STATUS_FILE.exists():
         return DEFAULT_STATUS
 
@@ -83,11 +104,40 @@ def read_status() -> dict[str, str]:
         "status": status,
         "message": str(data.get("message", "")),
         "updated_at": str(data.get("updated_at", "")),
+        "running_since": data.get("running_since", 0) or 0,
+        "last_elapsed_seconds": data.get("last_elapsed_seconds", 0) or 0,
     }
 
 
 def clean_field(value: object) -> str:
     return str(value).replace("|", "/").replace("\r", " ").replace("\n", " ")
+
+
+def format_elapsed_seconds(seconds: object) -> str:
+    try:
+        total = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        total = 0
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def task_elapsed_label(status_data: dict[str, object]) -> str:
+    status = str(status_data.get("status", "idle"))
+    if status in {"running", "waiting"}:
+        try:
+            running_since = float(status_data.get("running_since", 0) or 0)
+        except (TypeError, ValueError):
+            running_since = 0.0
+        if running_since > 0:
+            return format_elapsed_seconds(time.time() - running_since)
+        return "00:00"
+    if status == "success":
+        return "完成 " + format_elapsed_seconds(status_data.get("last_elapsed_seconds", 0))
+    return "--:--"
 
 
 def iter_recent_session_files(limit: int = 20) -> list[Path]:
@@ -287,7 +337,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}".format(
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
@@ -295,6 +345,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
                 secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
                 secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
+                task_elapsed=clean_field(task_elapsed_label(status_data)),
             )
             body = text.encode("utf-8")
             self.send_response(200)
