@@ -5,6 +5,7 @@ __pycache__/
 venv/
 status.local.json
 **/status.json
+**/usage-cache.json
 *.log
 status-server.log
 *.tmp

@@ -14,6 +14,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 STATUS_FILE = BASE_DIR / "status.json"
+USAGE_CACHE_FILE = BASE_DIR / "usage-cache.json"
 LOG_FILE = BASE_DIR / "status-server.log"
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8765"))
@@ -24,6 +25,7 @@ SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
 SUCCESS_DEBOUNCE_SECONDS = float(os.environ.get("SUCCESS_DEBOUNCE_SECONDS", "2.0"))
 MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.25"))
 RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
+USAGE_STALE_SECONDS = int(os.environ.get("USAGE_STALE_SECONDS", "900"))
 
 DEFAULT_STATUS = {
     "status": "idle",
@@ -37,10 +39,15 @@ DEFAULT_USAGE = {
     "available": False,
     "plan_type": "",
     "primary_remaining_percent": "",
+    "primary_remaining_value": None,
     "primary_resets_at": "",
     "secondary_remaining_percent": "",
+    "secondary_remaining_value": None,
     "secondary_resets_at": "",
     "updated_at": "",
+    "cached_at": "",
+    "source_session": "",
+    "sync_label": "等待 Codex 写入额度",
 }
 
 
@@ -177,7 +184,70 @@ def remaining_percent(used_percent: object) -> str:
     return f"{remaining}%"
 
 
-def usage_from_event(event: dict[str, object]) -> dict[str, object] | None:
+def parse_timestamp(value: object) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def format_sync_label(usage: dict[str, object]) -> str:
+    if not usage.get("available"):
+        return "等待 Codex 写入额度"
+
+    cached_at = str(usage.get("cached_at") or "")
+    timestamp = parse_timestamp(cached_at or usage.get("updated_at"))
+    if not timestamp:
+        return "最近同步"
+
+    updated = datetime.fromtimestamp(timestamp).astimezone()
+    label_time = updated.strftime("%H:%M")
+    if time.time() - timestamp > USAGE_STALE_SECONDS:
+        return f"可能滞后 {label_time}"
+    return f"更新 {label_time}"
+
+
+def read_usage_cache() -> dict[str, object]:
+    if not USAGE_CACHE_FILE.exists():
+        return DEFAULT_USAGE.copy()
+    try:
+        data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        write_log(f"usage-cache.json read failed: {exc}")
+        return DEFAULT_USAGE.copy()
+
+    usage = DEFAULT_USAGE.copy()
+    usage.update(data)
+    usage["sync_label"] = format_sync_label(usage)
+    return usage
+
+
+def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
+    usage = usage.copy()
+    usage["cached_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    usage["sync_label"] = format_sync_label(usage)
+    try:
+        USAGE_CACHE_FILE.write_text(json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        write_log(f"usage-cache.json write failed: {exc}")
+    return usage
+
+
+def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, object]:
+    cached = read_usage_cache()
+    if not usage:
+        return cached
+
+    usage_timestamp = parse_timestamp(usage.get("updated_at"))
+    cached_timestamp = parse_timestamp(cached.get("updated_at"))
+    if usage_timestamp > cached_timestamp or not cached.get("available"):
+        return write_usage_cache(usage)
+    return cached
+
+
+def usage_from_event(event: dict[str, object], source_session: Path | None = None) -> dict[str, object] | None:
     rate_limits = event.get("rate_limits")
     payload = event.get("payload")
     if rate_limits is None and isinstance(payload, dict):
@@ -203,6 +273,9 @@ def usage_from_event(event: dict[str, object]) -> dict[str, object] | None:
         "secondary_remaining_value": secondary_remaining,
         "secondary_resets_at": format_reset_label(secondary.get("resets_at")),
         "updated_at": str(event.get("timestamp", "")),
+        "cached_at": "",
+        "source_session": str(source_session or ""),
+        "sync_label": "",
     }
 
 
@@ -223,11 +296,11 @@ def read_usage() -> dict[str, object]:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            usage = usage_from_event(event)
+            usage = usage_from_event(event, path)
             if usage:
-                return usage
+                return maybe_update_usage_cache(usage)
 
-    return DEFAULT_USAGE.copy()
+    return read_usage_cache()
 
 
 class StatusHandler(BaseHTTPRequestHandler):
@@ -247,7 +320,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}".format(
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
@@ -258,6 +331,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 task_elapsed=clean_field(task_elapsed_label(status_data)),
                 primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
                 secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
+                sync_label=clean_field(usage_data.get("sync_label") or ""),
             )
             body = text.encode("utf-8")
             self.send_response(200)
@@ -405,6 +479,8 @@ def codex_status_monitor() -> None:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if '"rate_limits"' in line:
+                        maybe_update_usage_cache(usage_from_event(event, path))
                     applied_status = apply_codex_event(event)
                     if applied_status in {"running", "waiting"}:
                         last_running_at = time.time()
