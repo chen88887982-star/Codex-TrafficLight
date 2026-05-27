@@ -62,9 +62,9 @@ if ($content -match '(?m)^UsagePanelStrokeAlpha=.*$') {
 }
 
 if ($content -match '(?m)^UsagePanelStrokeColor=.*$') {
-  $content = $content -replace '(?m)^UsagePanelStrokeColor=.*$', "UsagePanelStrokeColor=78,88,104,$strokeAlpha"
+  $content = $content -replace '(?m)^UsagePanelStrokeColor=.*$', "UsagePanelStrokeColor=0,210,230,$strokeAlpha"
 } else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1UsagePanelStrokeColor=78,88,104,$strokeAlpha`r`n"
+  $content = $content -replace '(\[Variables\]\s*)', "`$1UsagePanelStrokeColor=0,210,230,$strokeAlpha`r`n"
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode

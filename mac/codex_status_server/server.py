@@ -159,12 +159,18 @@ def format_reset_label(epoch_seconds: object) -> str:
     return f"{reset_at.month}月{reset_at.day}日"
 
 
-def remaining_percent(used_percent: object) -> str:
+def remaining_value(used_percent: object) -> int | None:
     try:
         remaining = 100 - float(used_percent)
     except (TypeError, ValueError):
+        return None
+    return max(0, min(100, math.floor(remaining)))
+
+
+def remaining_percent(used_percent: object) -> str:
+    remaining = remaining_value(used_percent)
+    if remaining is None:
         return "--"
-    remaining = max(0, min(100, math.floor(remaining)))
     return f"{remaining}%"
 
 
@@ -179,12 +185,17 @@ def usage_from_event(event: dict[str, object]) -> dict[str, object] | None:
     secondary = rate_limits.get("secondary")
     if not isinstance(primary, dict) or not isinstance(secondary, dict):
         return None
+    primary_remaining = remaining_value(primary.get("used_percent"))
+    secondary_remaining = remaining_value(secondary.get("used_percent"))
+
     return {
         "available": True,
         "plan_type": str(rate_limits.get("plan_type") or ""),
-        "primary_remaining_percent": remaining_percent(primary.get("used_percent")),
+        "primary_remaining_percent": f"{primary_remaining}%" if primary_remaining is not None else "--",
+        "primary_remaining_value": primary_remaining,
         "primary_resets_at": format_reset_label(primary.get("resets_at")),
-        "secondary_remaining_percent": remaining_percent(secondary.get("used_percent")),
+        "secondary_remaining_percent": f"{secondary_remaining}%" if secondary_remaining is not None else "--",
+        "secondary_remaining_value": secondary_remaining,
         "secondary_resets_at": format_reset_label(secondary.get("resets_at")),
         "updated_at": str(event.get("timestamp", "")),
     }
@@ -337,7 +348,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}".format(
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
@@ -346,6 +357,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
                 secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
                 task_elapsed=clean_field(task_elapsed_label(status_data)),
+                primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
+                secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
             )
             body = text.encode("utf-8")
             self.send_response(200)
