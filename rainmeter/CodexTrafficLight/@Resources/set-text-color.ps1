@@ -1,6 +1,6 @@
 ﻿param(
   [Parameter(Mandatory=$true)]
-  [ValidateSet("TextColor", "MutedTextColor", "StatusTextColor", "AccentTextColor", "ResetTextColor")]
+  [ValidateSet("TextColor", "MutedTextColor", "StatusTextColor", "AccentTextColor", "ResetTextColor", "LowQuotaTextColor")]
   [string]$Variable,
 
   [ValidateSet("pick", "input")]
@@ -17,6 +17,7 @@ $labels = @{
   StatusTextColor = "状态文字"
   AccentTextColor = "额度重点文字"
   ResetTextColor = "重置时间文字"
+  LowQuotaTextColor = "低额度警告文字"
 }
 
 function Show-Error($message) {
