@@ -21,7 +21,6 @@ AUTO_MONITOR = os.environ.get("AUTO_MONITOR_CODEX", "1") != "0"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
-SUCCESS_DEBOUNCE_SECONDS = float(os.environ.get("SUCCESS_DEBOUNCE_SECONDS", "2.0"))
 MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.25"))
 RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
 USAGE_STALE_SECONDS = int(os.environ.get("USAGE_STALE_SECONDS", "900"))
@@ -332,15 +331,18 @@ def apply_codex_event(event: dict[str, object]) -> str:
         if phase != "final_answer":
             write_status("running", "Codex 正在生成回复")
             return "running"
+        if payload_type == "message" and str(payload.get("role", "")) == "assistant":
+            return "success"
 
     if event_type == "event_msg" and payload_type == "agent_message":
         phase = str(payload.get("phase", ""))
         if phase != "final_answer":
             write_status("running", "Codex 正在处理任务")
             return "running"
+        return "success"
 
     if event_type == "event_msg" and payload_type == "task_complete":
-        return "success"
+        return ""
 
     return ""
 
@@ -350,7 +352,6 @@ def codex_status_monitor() -> None:
     positions: dict[Path, int] = {}
     last_success_at = 0.0
     last_running_at = 0.0
-    pending_success_at = 0.0
     initialized = False
 
     while True:
@@ -390,19 +391,12 @@ def codex_status_monitor() -> None:
                     applied_status = apply_codex_event(event)
                     if applied_status in {"running", "waiting"}:
                         last_running_at = time.time()
-                        pending_success_at = 0.0
                     elif applied_status == "success":
-                        pending_success_at = time.time()
+                        write_status("success", "Codex 任务完成")
+                        last_success_at = time.time()
 
             current = read_status()
             now = time.time()
-            if pending_success_at and now - pending_success_at >= SUCCESS_DEBOUNCE_SECONDS:
-                if not last_running_at or last_running_at <= pending_success_at:
-                    write_status("success", "Codex 任务完成")
-                    last_success_at = now
-                pending_success_at = 0.0
-
-            current = read_status()
             if current.get("status") == "success" and last_success_at and now - last_success_at > SUCCESS_HOLD_SECONDS:
                 write_status("idle", "Codex 空闲")
                 last_success_at = 0.0
