@@ -45,7 +45,8 @@ win\codex_status_server\start-server.cmd
 - `task_started`：写入 `running`，红灯
 - 生成回复、工具调用、工具结果：保持 `running`，红灯
 - 等待确认相关事件：写入 `waiting`，黄灯
-- `task_complete`：写入 `success`，绿灯
+- 权限审核/审批评估会话：忽略，不影响主皮肤状态
+- 最终回复与 `task_complete` 都出现后：写入 `success`，绿灯
 - 完成 45 秒后：自动回到 `idle`，灰灯
 
 默认监控间隔是 0.25 秒，Rainmeter 默认 1 秒读取一次 `/rainmeter`。
