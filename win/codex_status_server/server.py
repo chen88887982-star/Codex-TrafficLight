@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import sys
 import threading
 import time
 from datetime import datetime
@@ -184,7 +183,7 @@ def task_elapsed_label(status_data: dict[str, object]) -> str:
     return "--:--"
 
 
-def iter_recent_session_files(limit: int = 5) -> list[Path]:
+def iter_recent_session_files(limit: int = 20) -> list[Path]:
     if not CODEX_SESSIONS_DIR.exists():
         return []
     files = list(CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"))
@@ -197,7 +196,6 @@ def format_reset_label(epoch_seconds: object) -> str:
         reset_at = datetime.fromtimestamp(int(epoch_seconds)).astimezone()
     except (TypeError, ValueError, OSError):
         return "--"
-
     now = datetime.now().astimezone()
     if reset_at.date() == now.date():
         return reset_at.strftime("%H:%M")
@@ -289,12 +287,10 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
         rate_limits = payload.get("rate_limits")
     if not isinstance(rate_limits, dict):
         return None
-
     primary = rate_limits.get("primary")
     secondary = rate_limits.get("secondary")
     if not isinstance(primary, dict) or not isinstance(secondary, dict):
         return None
-
     primary_remaining = remaining_value(primary.get("used_percent"))
     secondary_remaining = remaining_value(secondary.get("used_percent"))
 
@@ -315,7 +311,7 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
 
 
 def read_usage() -> dict[str, object]:
-    for path in iter_recent_session_files(limit=20):
+    for path in iter_recent_session_files():
         try:
             with path.open("rb") as fh:
                 size = path.stat().st_size
@@ -323,7 +319,6 @@ def read_usage() -> dict[str, object]:
                 chunk = fh.read().decode("utf-8", errors="replace")
         except OSError:
             continue
-
         for line in reversed(chunk.splitlines()):
             if '"rate_limits"' not in line:
                 continue
@@ -334,96 +329,7 @@ def read_usage() -> dict[str, object]:
             usage = usage_from_event(event, path)
             if usage:
                 return maybe_update_usage_cache(usage)
-
     return read_usage_cache()
-
-
-class StatusHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def do_GET(self) -> None:
-        write_log(f"Request from {self.client_address[0]}:{self.client_address[1]}: {self.requestline}")
-
-        path = self.path.rstrip("/")
-        if path == "/rainmeter":
-            status_data = read_status()
-            usage_data = read_usage()
-            status_codes = {
-                "idle": "0",
-                "running": "1",
-                "waiting": "2",
-                "success": "3",
-                "error": "4",
-            }
-            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}".format(
-                code=status_codes.get(status_data["status"], "4"),
-                message=clean_field(status_data["message"]),
-                updated_at=clean_field(status_data["updated_at"]),
-                primary_remaining=clean_field(usage_data["primary_remaining_percent"] or "--"),
-                primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
-                secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
-                secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
-                task_elapsed=clean_field(task_elapsed_label(status_data)),
-                primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
-                secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
-                sync_label=clean_field(usage_data.get("sync_label") or ""),
-            )
-            body = text.encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-            write_log("Response 200 rainmeter")
-            return
-
-        if path == "/usage":
-            body = json.dumps(read_usage(), ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-            write_log("Response 200 usage")
-            return
-
-        if path != "/status":
-            body = b"Not Found"
-            self.send_response(404)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-            write_log("Response 404")
-            return
-
-        status_data = read_status()
-        status_data["usage"] = read_usage()
-        body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-        write_log("Response 200 status.json")
-
-    def log_message(self, fmt: str, *args: object) -> None:
-        return
-
-
-class StatusServer(ThreadingHTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
 
 
 def apply_codex_event(event: dict[str, object]) -> str:
@@ -548,6 +454,88 @@ def codex_status_monitor() -> None:
         time.sleep(MONITOR_INTERVAL_SECONDS)
 
 
+class StatusHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:
+        write_log(f"Request from {self.client_address[0]}:{self.client_address[1]}: {self.requestline}")
+
+        path = self.path.rstrip("/")
+        if path == "/rainmeter":
+            status_data = read_status()
+            usage_data = read_usage()
+            status_codes = {
+                "idle": "0",
+                "running": "1",
+                "waiting": "2",
+                "success": "3",
+                "error": "4",
+            }
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}".format(
+                code=status_codes.get(status_data["status"], "4"),
+                message=clean_field(status_data["message"]),
+                updated_at=clean_field(status_data["updated_at"]),
+                primary_remaining=clean_field(usage_data["primary_remaining_percent"] or "--"),
+                primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
+                secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
+                secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
+                task_elapsed=clean_field(task_elapsed_label(status_data)),
+                primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
+                secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
+                sync_label=clean_field(usage_data.get("sync_label") or ""),
+            )
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            write_log("Response 200 rainmeter")
+            return
+
+        if path == "/usage":
+            body = json.dumps(read_usage(), ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            write_log("Response 200 usage")
+            return
+
+        if path != "/status":
+            self.send_error(404, "Not Found")
+            write_log("Response 404")
+            return
+
+        status_data = read_status()
+        status_data["usage"] = read_usage()
+        body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        write_log("Response 200 status.json")
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class StatusServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def main() -> int:
     if not STATUS_FILE.exists():
         STATUS_FILE.write_text(json.dumps(DEFAULT_STATUS, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -559,17 +547,17 @@ def main() -> int:
         return 1
 
     write_log(f"Codex status server started on {HOST}:{PORT}")
-    print(f"Same Windows: http://127.0.0.1:{PORT}/status")
-    print(f"Other computer: http://THIS-WINDOWS-IP:{PORT}/status")
+    print(f"Codex status server: http://{HOST}:{PORT}/status")
+    print(f"Local computer: http://127.0.0.1:{PORT}/status")
+    print(f"Other computer: http://THIS-COMPUTER-IP:{PORT}/status")
     print(f"Status file: {STATUS_FILE}")
     print(f"Log file: {LOG_FILE}")
+    print(f"Codex usage sessions: {CODEX_SESSIONS_DIR}")
     if AUTO_MONITOR:
         threading.Thread(target=codex_status_monitor, name="codex-status-monitor", daemon=True).start()
         print(f"Auto monitor: {CODEX_SESSIONS_DIR}")
     else:
         print("Auto monitor: disabled")
-    print("按 Ctrl+C 或关闭窗口停止服务。")
-
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -536,13 +536,20 @@ class StatusServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def main() -> None:
+def main() -> int:
     if not STATUS_FILE.exists():
         STATUS_FILE.write_text(json.dumps(DEFAULT_STATUS, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    server = StatusServer((HOST, PORT), StatusHandler)
+    try:
+        server = StatusServer((HOST, PORT), StatusHandler)
+    except OSError as exc:
+        write_log(f"Codex status server failed to start on {HOST}:{PORT}: {exc}")
+        return 1
+
     write_log(f"Codex status server started on {HOST}:{PORT}")
     print(f"Codex status server: http://{HOST}:{PORT}/status")
+    print(f"Local computer: http://127.0.0.1:{PORT}/status")
+    print(f"Other computer: http://THIS-COMPUTER-IP:{PORT}/status")
     print(f"Status file: {STATUS_FILE}")
     print(f"Log file: {LOG_FILE}")
     print(f"Codex usage sessions: {CODEX_SESSIONS_DIR}")
@@ -553,10 +560,14 @@ def main() -> None:
         print("Auto monitor: disabled")
     try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        pass
     finally:
         write_log("Codex status server stopped")
         server.server_close()
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
