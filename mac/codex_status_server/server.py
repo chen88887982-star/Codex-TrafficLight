@@ -31,6 +31,11 @@ DEFAULT_STATUS = {
     "updated_at": "1970-01-01T00:00:00+00:00",
     "running_since": 0.0,
     "last_elapsed_seconds": 0,
+    "task_usage_start_primary": None,
+    "task_usage_start_secondary": None,
+    "task_usage_end_primary": None,
+    "task_usage_end_secondary": None,
+    "task_usage_label": "本次 --",
 }
 
 DEFAULT_USAGE = {
@@ -38,9 +43,11 @@ DEFAULT_USAGE = {
     "plan_type": "",
     "primary_remaining_percent": "",
     "primary_remaining_value": None,
+    "primary_used_percent": None,
     "primary_resets_at": "",
     "secondary_remaining_percent": "",
     "secondary_remaining_value": None,
+    "secondary_used_percent": None,
     "secondary_resets_at": "",
     "updated_at": "",
     "cached_at": "",
@@ -100,10 +107,20 @@ def write_status(status: str, message: str) -> None:
     previous = read_status() if STATUS_FILE.exists() else DEFAULT_STATUS
     running_since = float(previous.get("running_since", 0) or 0)
     last_elapsed_seconds = int(float(previous.get("last_elapsed_seconds", 0) or 0))
+    task_usage_start_primary = previous.get("task_usage_start_primary")
+    task_usage_start_secondary = previous.get("task_usage_start_secondary")
+    task_usage_end_primary = previous.get("task_usage_end_primary")
+    task_usage_end_secondary = previous.get("task_usage_end_secondary")
+    task_usage_label = str(previous.get("task_usage_label") or "本次 --")
 
     if status in {"running", "waiting"}:
         if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
             running_since = now
+            task_usage_start_primary = None
+            task_usage_start_secondary = None
+            task_usage_end_primary = None
+            task_usage_end_secondary = None
+            task_usage_label = "本次 --"
     elif status == "success":
         if running_since > 0:
             last_elapsed_seconds = max(0, int(now - running_since))
@@ -119,6 +136,11 @@ def write_status(status: str, message: str) -> None:
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "running_since": running_since,
         "last_elapsed_seconds": last_elapsed_seconds,
+        "task_usage_start_primary": task_usage_start_primary,
+        "task_usage_start_secondary": task_usage_start_secondary,
+        "task_usage_end_primary": task_usage_end_primary,
+        "task_usage_end_secondary": task_usage_end_secondary,
+        "task_usage_label": task_usage_label,
     }
     with status_lock:
         STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -149,6 +171,11 @@ def read_status() -> dict[str, object]:
         "updated_at": str(data.get("updated_at", "")),
         "running_since": data.get("running_since", 0) or 0,
         "last_elapsed_seconds": data.get("last_elapsed_seconds", 0) or 0,
+        "task_usage_start_primary": data.get("task_usage_start_primary"),
+        "task_usage_start_secondary": data.get("task_usage_start_secondary"),
+        "task_usage_end_primary": data.get("task_usage_end_primary"),
+        "task_usage_end_secondary": data.get("task_usage_end_secondary"),
+        "task_usage_label": str(data.get("task_usage_label") or "本次 --"),
     }
 
 
@@ -215,6 +242,14 @@ def remaining_percent(used_percent: object) -> str:
     if remaining is None:
         return "--"
     return f"{remaining}%"
+
+
+def used_percent_value(used_percent: object) -> float | None:
+    try:
+        used = float(used_percent)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(100.0, used))
 
 
 def parse_timestamp(value: object) -> float:
@@ -293,15 +328,19 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
         return None
     primary_remaining = remaining_value(primary.get("used_percent"))
     secondary_remaining = remaining_value(secondary.get("used_percent"))
+    primary_used = used_percent_value(primary.get("used_percent"))
+    secondary_used = used_percent_value(secondary.get("used_percent"))
 
     return {
         "available": True,
         "plan_type": str(rate_limits.get("plan_type") or ""),
         "primary_remaining_percent": f"{primary_remaining}%" if primary_remaining is not None else "--",
         "primary_remaining_value": primary_remaining,
+        "primary_used_percent": primary_used,
         "primary_resets_at": format_reset_label(primary.get("resets_at")),
         "secondary_remaining_percent": f"{secondary_remaining}%" if secondary_remaining is not None else "--",
         "secondary_remaining_value": secondary_remaining,
+        "secondary_used_percent": secondary_used,
         "secondary_resets_at": format_reset_label(secondary.get("resets_at")),
         "updated_at": str(event.get("timestamp", "")),
         "cached_at": "",
@@ -332,6 +371,60 @@ def read_usage() -> dict[str, object]:
     return read_usage_cache()
 
 
+def format_usage_delta(delta: float | None) -> str:
+    if delta is None:
+        return "--"
+    delta = max(0.0, delta)
+    if delta < 0.05:
+        return "0%"
+    text = f"{delta:.1f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+def format_task_usage_label(primary_delta: float | None, secondary_delta: float | None) -> str:
+    if primary_delta is None and secondary_delta is None:
+        return "本次 --"
+    return f"本次 {format_usage_delta(primary_delta)} / {format_usage_delta(secondary_delta)}"
+
+
+def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
+    if not usage:
+        return
+
+    primary_used = usage.get("primary_used_percent")
+    secondary_used = usage.get("secondary_used_percent")
+    if primary_used is None and secondary_used is None:
+        return
+
+    status_data = read_status()
+    status = str(status_data.get("status", "idle"))
+    if status not in {"running", "waiting", "success"}:
+        return
+
+    start_primary = status_data.get("task_usage_start_primary")
+    start_secondary = status_data.get("task_usage_start_secondary")
+    if start_primary is None and primary_used is not None:
+        start_primary = primary_used
+    if start_secondary is None and secondary_used is not None:
+        start_secondary = secondary_used
+
+    primary_delta = None
+    secondary_delta = None
+    if start_primary is not None and primary_used is not None:
+        primary_delta = float(primary_used) - float(start_primary)
+    if start_secondary is not None and secondary_used is not None:
+        secondary_delta = float(secondary_used) - float(start_secondary)
+
+    status_data["task_usage_start_primary"] = start_primary
+    status_data["task_usage_start_secondary"] = start_secondary
+    status_data["task_usage_end_primary"] = primary_used
+    status_data["task_usage_end_secondary"] = secondary_used
+    status_data["task_usage_label"] = format_task_usage_label(primary_delta, secondary_delta)
+
+    with status_lock:
+        STATUS_FILE.write_text(json.dumps(status_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def apply_codex_event(event: dict[str, object]) -> str:
     event_type = str(event.get("type", ""))
     payload = event.get("payload", {})
@@ -341,31 +434,37 @@ def apply_codex_event(event: dict[str, object]) -> str:
     payload_type = str(payload.get("type", ""))
     if event_type == "event_msg" and payload_type in {"approval_request", "permission_request", "user_input_requested"}:
         write_status("waiting", "Codex 等待用户确认")
+        update_task_usage_snapshot(read_usage_cache())
         return "waiting"
 
     if event_type == "response_item" and payload_type == "function_call":
         arguments = str(payload.get("arguments", ""))
         if "require_escalated" in arguments:
             write_status("waiting", "Codex 等待用户确认")
+            update_task_usage_snapshot(read_usage_cache())
             return "waiting"
 
     if event_type == "event_msg" and payload_type == "task_started":
         write_status("running", "Codex 正在处理任务")
+        update_task_usage_snapshot(read_usage_cache())
         return "running"
 
     if event_type == "response_item" and payload_type == "function_call":
         name = str(payload.get("name", "工具"))
         write_status("running", f"Codex 正在执行 {name}")
+        update_task_usage_snapshot(read_usage_cache())
         return "running"
 
     if event_type == "response_item" and payload_type == "function_call_output":
         write_status("running", "Codex 正在处理工具结果")
+        update_task_usage_snapshot(read_usage_cache())
         return "running"
 
     if event_type == "response_item" and payload_type in {"reasoning", "message"}:
         phase = str(payload.get("phase", ""))
         if phase != "final_answer":
             write_status("running", "Codex 正在生成回复")
+            update_task_usage_snapshot(read_usage_cache())
             return "running"
         if payload_type == "message" and str(payload.get("role", "")) == "assistant":
             return "success"
@@ -374,6 +473,7 @@ def apply_codex_event(event: dict[str, object]) -> str:
         phase = str(payload.get("phase", ""))
         if phase != "final_answer":
             write_status("running", "Codex 正在处理任务")
+            update_task_usage_snapshot(read_usage_cache())
             return "running"
         return "success"
 
@@ -431,12 +531,15 @@ def codex_status_monitor() -> None:
                         write_log(f"Ignored approval review session: {path}")
                         break
                     if '"rate_limits"' in line:
-                        maybe_update_usage_cache(usage_from_event(event, path))
+                        usage = usage_from_event(event, path)
+                        maybe_update_usage_cache(usage)
+                        update_task_usage_snapshot(usage)
                     applied_status = apply_codex_event(event)
                     if applied_status in {"running", "waiting"}:
                         last_running_at = time.time()
                     elif applied_status == "success":
                         write_status("success", "Codex 任务完成")
+                        update_task_usage_snapshot(read_usage_cache())
                         last_success_at = time.time()
 
             current = read_status()
@@ -471,7 +574,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage}".format(
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
@@ -483,6 +586,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
                 secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
                 sync_label=clean_field(usage_data.get("sync_label") or ""),
+                task_usage=clean_field(status_data.get("task_usage_label") or "本次 --"),
             )
             body = text.encode("utf-8")
             self.send_response(200)
