@@ -59,6 +59,42 @@ def write_log(message: str) -> None:
         fh.write(line + "\n")
 
 
+def is_approval_review_event(event: dict[str, object]) -> bool:
+    payload = event.get("payload", {})
+    if not isinstance(payload, dict):
+        return False
+
+    event_type = str(event.get("type", ""))
+    payload_type = str(payload.get("type", ""))
+    payload_text = json.dumps(payload, ensure_ascii=False)
+
+    if event_type == "session_meta":
+        source = payload.get("source", {})
+        if isinstance(source, dict) and "guardian" in json.dumps(source.get("subagent", {}), ensure_ascii=False):
+            return True
+
+    review_prompt_markers = (
+        "APPROVAL REQUEST",
+        "Reviewed Codex session id",
+        "Planned action JSON",
+        "approval assessment",
+    )
+    if event_type == "response_item" and payload_type == "message" and str(payload.get("role", "")) == "user":
+        return any(marker in payload_text for marker in review_prompt_markers)
+
+    if event_type == "event_msg" and payload_type == "user_message":
+        return any(marker in payload_text for marker in review_prompt_markers)
+
+    review_answer_markers = ("risk_level", "user_authorization", "outcome", "rationale")
+    if event_type == "response_item" and payload_type == "message" and str(payload.get("role", "")) == "assistant":
+        return str(payload.get("phase", "")) == "final_answer" and all(marker in payload_text for marker in review_answer_markers)
+
+    if event_type == "event_msg" and payload_type == "agent_message":
+        return str(payload.get("phase", "")) == "final_answer" and all(marker in payload_text for marker in review_answer_markers)
+
+    return False
+
+
 def write_status(status: str, message: str) -> None:
     now = time.time()
     previous = read_status() if STATUS_FILE.exists() else DEFAULT_STATUS
@@ -350,13 +386,14 @@ def apply_codex_event(event: dict[str, object]) -> str:
 def codex_status_monitor() -> None:
     write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
     positions: dict[Path, int] = {}
+    ignored_paths: set[Path] = set()
     last_success_at = 0.0
     last_running_at = 0.0
     initialized = False
 
     while True:
         try:
-            files = iter_recent_session_files(limit=5)
+            files = iter_recent_session_files()
             if not files:
                 time.sleep(1)
                 continue
@@ -370,6 +407,9 @@ def codex_status_monitor() -> None:
                 continue
 
             for path in files:
+                if path in ignored_paths:
+                    continue
+
                 if path not in positions:
                     positions[path] = 0
 
@@ -386,6 +426,10 @@ def codex_status_monitor() -> None:
                         event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    if is_approval_review_event(event):
+                        ignored_paths.add(path)
+                        write_log(f"Ignored approval review session: {path}")
+                        break
                     if '"rate_limits"' in line:
                         maybe_update_usage_cache(usage_from_event(event, path))
                     applied_status = apply_codex_event(event)

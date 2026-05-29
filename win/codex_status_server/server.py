@@ -69,6 +69,11 @@ def is_approval_review_event(event: dict[str, object]) -> bool:
     payload_type = str(payload.get("type", ""))
     payload_text = json.dumps(payload, ensure_ascii=False)
 
+    if event_type == "session_meta":
+        source = payload.get("source", {})
+        if isinstance(source, dict) and "guardian" in json.dumps(source.get("subagent", {}), ensure_ascii=False):
+            return True
+
     review_prompt_markers = (
         "APPROVAL REQUEST",
         "Reviewed Codex session id",
