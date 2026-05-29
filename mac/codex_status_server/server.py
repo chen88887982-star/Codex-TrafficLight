@@ -36,6 +36,8 @@ DEFAULT_STATUS = {
     "task_usage_end_primary": None,
     "task_usage_end_secondary": None,
     "task_usage_label": "本次 --",
+    "task_usage_primary_label": "",
+    "task_usage_secondary_label": "",
 }
 
 DEFAULT_USAGE = {
@@ -112,6 +114,8 @@ def write_status(status: str, message: str) -> None:
     task_usage_end_primary = previous.get("task_usage_end_primary")
     task_usage_end_secondary = previous.get("task_usage_end_secondary")
     task_usage_label = str(previous.get("task_usage_label") or "本次 --")
+    task_usage_primary_label = str(previous.get("task_usage_primary_label") or "")
+    task_usage_secondary_label = str(previous.get("task_usage_secondary_label") or "")
 
     if status in {"running", "waiting"}:
         if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
@@ -121,6 +125,8 @@ def write_status(status: str, message: str) -> None:
             task_usage_end_primary = None
             task_usage_end_secondary = None
             task_usage_label = "本次 --"
+            task_usage_primary_label = ""
+            task_usage_secondary_label = ""
     elif status == "success":
         if running_since > 0:
             last_elapsed_seconds = max(0, int(now - running_since))
@@ -141,6 +147,8 @@ def write_status(status: str, message: str) -> None:
         "task_usage_end_primary": task_usage_end_primary,
         "task_usage_end_secondary": task_usage_end_secondary,
         "task_usage_label": task_usage_label,
+        "task_usage_primary_label": task_usage_primary_label,
+        "task_usage_secondary_label": task_usage_secondary_label,
     }
     with status_lock:
         STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -176,6 +184,8 @@ def read_status() -> dict[str, object]:
         "task_usage_end_primary": data.get("task_usage_end_primary"),
         "task_usage_end_secondary": data.get("task_usage_end_secondary"),
         "task_usage_label": str(data.get("task_usage_label") or "本次 --"),
+        "task_usage_primary_label": str(data.get("task_usage_primary_label") or ""),
+        "task_usage_secondary_label": str(data.get("task_usage_secondary_label") or ""),
     }
 
 
@@ -373,18 +383,20 @@ def read_usage() -> dict[str, object]:
 
 def format_usage_delta(delta: float | None) -> str:
     if delta is None:
-        return "--"
+        return ""
     delta = max(0.0, delta)
     if delta < 0.05:
-        return "0%"
+        return ""
     text = f"{delta:.1f}".rstrip("0").rstrip(".")
-    return f"{text}%"
+    return f"-{text}%"
 
 
 def format_task_usage_label(primary_delta: float | None, secondary_delta: float | None) -> str:
     if primary_delta is None and secondary_delta is None:
         return "本次 --"
-    return f"本次 {format_usage_delta(primary_delta)} / {format_usage_delta(secondary_delta)}"
+    primary = format_usage_delta(primary_delta) or "--"
+    secondary = format_usage_delta(secondary_delta) or "--"
+    return f"本次 {primary} / {secondary}"
 
 
 def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
@@ -420,6 +432,8 @@ def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
     status_data["task_usage_end_primary"] = primary_used
     status_data["task_usage_end_secondary"] = secondary_used
     status_data["task_usage_label"] = format_task_usage_label(primary_delta, secondary_delta)
+    status_data["task_usage_primary_label"] = format_usage_delta(primary_delta)
+    status_data["task_usage_secondary_label"] = format_usage_delta(secondary_delta)
 
     with status_lock:
         STATUS_FILE.write_text(json.dumps(status_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -574,7 +588,7 @@ class StatusHandler(BaseHTTPRequestHandler):
                 "success": "3",
                 "error": "4",
             }
-            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage}".format(
+            text = "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage_primary}|{task_usage_secondary}".format(
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
@@ -586,7 +600,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
                 secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
                 sync_label=clean_field(usage_data.get("sync_label") or ""),
-                task_usage=clean_field(status_data.get("task_usage_label") or "本次 --"),
+                task_usage_primary=clean_field(status_data.get("task_usage_primary_label") or ""),
+                task_usage_secondary=clean_field(status_data.get("task_usage_secondary_label") or ""),
             )
             body = text.encode("utf-8")
             self.send_response(200)
