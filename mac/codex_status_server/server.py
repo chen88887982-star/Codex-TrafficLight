@@ -581,6 +581,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         if path == "/rainmeter":
             status_data = read_status()
             usage_data = read_usage()
+            is_idle = str(status_data.get("status", "idle")) == "idle"
             status_codes = {
                 "idle": "0",
                 "running": "1",
@@ -600,8 +601,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
                 secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
                 sync_label=clean_field(usage_data.get("sync_label") or ""),
-                task_usage_primary=clean_field(status_data.get("task_usage_primary_label") or ""),
-                task_usage_secondary=clean_field(status_data.get("task_usage_secondary_label") or ""),
+                task_usage_primary="" if is_idle else clean_field(status_data.get("task_usage_primary_label") or ""),
+                task_usage_secondary="" if is_idle else clean_field(status_data.get("task_usage_secondary_label") or ""),
             )
             body = text.encode("utf-8")
             self.send_response(200)
