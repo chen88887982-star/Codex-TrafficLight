@@ -228,11 +228,13 @@ def iter_recent_session_files(limit: int = 20) -> list[Path]:
     return files[:limit]
 
 
-def format_reset_label(epoch_seconds: object) -> str:
+def format_reset_label(epoch_seconds: object, *, always_time: bool = False) -> str:
     try:
         reset_at = datetime.fromtimestamp(int(epoch_seconds)).astimezone()
     except (TypeError, ValueError, OSError):
         return "--"
+    if always_time:
+        return reset_at.strftime("%H:%M")
     now = datetime.now().astimezone()
     if reset_at.date() == now.date():
         return reset_at.strftime("%H:%M")
@@ -347,7 +349,7 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
         "primary_remaining_percent": f"{primary_remaining}%" if primary_remaining is not None else "--",
         "primary_remaining_value": primary_remaining,
         "primary_used_percent": primary_used,
-        "primary_resets_at": format_reset_label(primary.get("resets_at")),
+        "primary_resets_at": format_reset_label(primary.get("resets_at"), always_time=True),
         "secondary_remaining_percent": f"{secondary_remaining}%" if secondary_remaining is not None else "--",
         "secondary_remaining_value": secondary_remaining,
         "secondary_used_percent": secondary_used,
