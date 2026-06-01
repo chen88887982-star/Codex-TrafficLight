@@ -273,6 +273,20 @@ def parse_timestamp(value: object) -> float:
         return 0.0
 
 
+def format_age_label(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return "刚刚"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} 小时"
+    days = hours // 24
+    return f"{days} 天"
+
+
 def format_sync_label(usage: dict[str, object]) -> str:
     if not usage.get("available"):
         return "等待 Codex 写入额度"
@@ -284,8 +298,9 @@ def format_sync_label(usage: dict[str, object]) -> str:
 
     updated = datetime.fromtimestamp(timestamp).astimezone()
     label_time = updated.strftime("%H:%M")
-    if time.time() - timestamp > USAGE_STALE_SECONDS:
-        return f"可能滞后 {label_time}"
+    age_seconds = time.time() - timestamp
+    if age_seconds > USAGE_STALE_SECONDS:
+        return f"可能滞后 {format_age_label(age_seconds)}"
     return f"更新 {label_time}"
 
 

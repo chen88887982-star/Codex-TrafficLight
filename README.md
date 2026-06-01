@@ -153,7 +153,7 @@ macOS: ~/.codex/sessions
 
 如果用户把 Codex 数据目录放在别处，可以在启动服务前设置 `CODEX_HOME` 环境变量，指向自己的 `.codex` 目录。服务会读取日志里的 `rate_limits.used_percent`，并自动换算成剩余额度 `100 - used_percent`。
 
-服务会把最新一次成功读取到的额度写入本地 `usage-cache.json`。只有发现新的 `rate_limits` 时才更新缓存；如果本次日志里没有新的 `rate_limits`，就继续使用上次缓存，不清空、不伪造实时数据。Rainmeter 皮肤读取状态服务输出的缓存结果，并显示“更新 HH:MM”或“可能滞后 HH:MM”。默认超过 15 分钟没有新额度记录会提示可能滞后，可用环境变量 `USAGE_STALE_SECONDS` 调整。
+服务会把最新一次成功读取到的额度写入本地 `usage-cache.json`。只有发现新的 `rate_limits` 时才更新缓存；如果本次日志里没有新的 `rate_limits`，就继续使用上次缓存，不清空、不伪造实时数据。Rainmeter 皮肤读取状态服务输出的缓存结果，并显示“更新 HH:MM”“可能滞后 N 分钟/小时/天”或“等待 Codex 写入额度”。默认超过 15 分钟没有新额度记录会提示可能滞后，可用环境变量 `USAGE_STALE_SECONDS` 调整。
 
 如果不想保留黑色窗口，可以双击：
 
