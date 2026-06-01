@@ -291,8 +291,7 @@ def format_sync_label(usage: dict[str, object]) -> str:
     if not usage.get("available"):
         return "等待 Codex 写入额度"
 
-    cached_at = str(usage.get("cached_at") or "")
-    timestamp = parse_timestamp(cached_at or usage.get("updated_at"))
+    timestamp = parse_timestamp(usage.get("updated_at"))
     if not timestamp:
         return "最近同步"
 
@@ -334,6 +333,13 @@ def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]
     if not cached.get("available"):
         return True
 
+    usage_timestamp = parse_timestamp(usage.get("updated_at"))
+    cached_timestamp = parse_timestamp(cached.get("updated_at"))
+    if usage_timestamp < cached_timestamp:
+        return False
+    if usage_timestamp > cached_timestamp:
+        return True
+
     fields = (
         "updated_at",
         "source_session",
@@ -350,6 +356,11 @@ def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, objec
     if not usage:
         return cached
 
+    usage_timestamp = parse_timestamp(usage.get("updated_at"))
+    cached_timestamp = parse_timestamp(cached.get("updated_at"))
+    if cached.get("available") and usage_timestamp < cached_timestamp:
+        return cached
+
     if usage_cache_needs_update(usage, cached):
         return write_usage_cache(usage)
 
@@ -357,6 +368,19 @@ def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, objec
     usage["cached_at"] = cached.get("cached_at", "")
     usage["sync_label"] = format_sync_label(usage)
     return usage
+
+
+def newer_usage(left: dict[str, object] | None, right: dict[str, object] | None) -> dict[str, object] | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+
+    left_timestamp = parse_timestamp(left.get("updated_at"))
+    right_timestamp = parse_timestamp(right.get("updated_at"))
+    if right_timestamp > left_timestamp:
+        return right
+    return left
 
 
 def usage_from_event(event: dict[str, object], source_session: Path | None = None) -> dict[str, object] | None:
@@ -394,6 +418,7 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
 
 
 def read_usage() -> dict[str, object]:
+    latest_usage: dict[str, object] | None = None
     for path in iter_recent_session_files():
         try:
             with path.open("rb") as fh:
@@ -411,8 +436,9 @@ def read_usage() -> dict[str, object]:
                 continue
             usage = usage_from_event(event, path)
             if usage:
-                return maybe_update_usage_cache(usage)
-    return read_usage_cache()
+                latest_usage = newer_usage(latest_usage, usage)
+                break
+    return maybe_update_usage_cache(latest_usage)
 
 
 def format_usage_delta(delta: float | None) -> str:
@@ -580,7 +606,7 @@ def codex_status_monitor() -> None:
                         break
                     if '"rate_limits"' in line:
                         usage = usage_from_event(event, path)
-                        maybe_update_usage_cache(usage)
+                        usage = maybe_update_usage_cache(usage)
                         update_task_usage_snapshot(usage)
                     applied_status = apply_codex_event(event)
                     if applied_status in {"running", "waiting"}:
