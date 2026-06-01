@@ -330,16 +330,33 @@ def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
     return usage
 
 
+def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]) -> bool:
+    if not cached.get("available"):
+        return True
+
+    fields = (
+        "updated_at",
+        "source_session",
+        "primary_used_percent",
+        "secondary_used_percent",
+        "primary_remaining_value",
+        "secondary_remaining_value",
+    )
+    return any(usage.get(field) != cached.get(field) for field in fields)
+
+
 def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, object]:
     cached = read_usage_cache()
     if not usage:
         return cached
 
-    usage_timestamp = parse_timestamp(usage.get("updated_at"))
-    cached_timestamp = parse_timestamp(cached.get("updated_at"))
-    if usage_timestamp > cached_timestamp or not cached.get("available"):
+    if usage_cache_needs_update(usage, cached):
         return write_usage_cache(usage)
-    return cached
+
+    usage = usage.copy()
+    usage["cached_at"] = cached.get("cached_at", "")
+    usage["sync_label"] = format_sync_label(usage)
+    return usage
 
 
 def usage_from_event(event: dict[str, object], source_session: Path | None = None) -> dict[str, object] | None:
