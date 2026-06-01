@@ -47,10 +47,12 @@ DEFAULT_USAGE = {
     "primary_remaining_value": None,
     "primary_used_percent": None,
     "primary_resets_at": "",
+    "primary_resets_at_epoch": None,
     "secondary_remaining_percent": "",
     "secondary_remaining_value": None,
     "secondary_used_percent": None,
     "secondary_resets_at": "",
+    "secondary_resets_at_epoch": None,
     "updated_at": "",
     "cached_at": "",
     "source_session": "",
@@ -264,6 +266,13 @@ def used_percent_value(used_percent: object) -> float | None:
     return max(0.0, min(100.0, used))
 
 
+def epoch_value(epoch_seconds: object) -> int | None:
+    try:
+        return int(epoch_seconds)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_timestamp(value: object) -> float:
     if not value:
         return 0.0
@@ -329,6 +338,44 @@ def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
     return usage
 
 
+def remaining_percent_from_value(value: object) -> str:
+    if value is None:
+        return "--"
+    return f"{value}%"
+
+
+def same_reset_cycle(usage: dict[str, object], cached: dict[str, object], prefix: str) -> bool:
+    usage_epoch = usage.get(f"{prefix}_resets_at_epoch")
+    cached_epoch = cached.get(f"{prefix}_resets_at_epoch")
+    if usage_epoch is not None and cached_epoch is not None:
+        return usage_epoch == cached_epoch
+    return usage.get(f"{prefix}_resets_at") == cached.get(f"{prefix}_resets_at")
+
+
+def apply_conservative_usage_floor(usage: dict[str, object], cached: dict[str, object]) -> dict[str, object]:
+    if not cached.get("available"):
+        return usage
+
+    usage = usage.copy()
+    for prefix in ("primary", "secondary"):
+        if not same_reset_cycle(usage, cached, prefix):
+            continue
+
+        usage_remaining = usage.get(f"{prefix}_remaining_value")
+        cached_remaining = cached.get(f"{prefix}_remaining_value")
+        if isinstance(usage_remaining, int) and isinstance(cached_remaining, int):
+            remaining = min(usage_remaining, cached_remaining)
+            usage[f"{prefix}_remaining_value"] = remaining
+            usage[f"{prefix}_remaining_percent"] = remaining_percent_from_value(remaining)
+
+        usage_used = usage.get(f"{prefix}_used_percent")
+        cached_used = cached.get(f"{prefix}_used_percent")
+        if isinstance(usage_used, (int, float)) and isinstance(cached_used, (int, float)):
+            usage[f"{prefix}_used_percent"] = max(float(usage_used), float(cached_used))
+
+    return usage
+
+
 def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]) -> bool:
     if not cached.get("available"):
         return True
@@ -344,7 +391,9 @@ def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]
         "updated_at",
         "source_session",
         "primary_used_percent",
+        "primary_resets_at_epoch",
         "secondary_used_percent",
+        "secondary_resets_at_epoch",
         "primary_remaining_value",
         "secondary_remaining_value",
     )
@@ -360,6 +409,8 @@ def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, objec
     cached_timestamp = parse_timestamp(cached.get("updated_at"))
     if cached.get("available") and usage_timestamp < cached_timestamp:
         return cached
+
+    usage = apply_conservative_usage_floor(usage, cached)
 
     if usage_cache_needs_update(usage, cached):
         return write_usage_cache(usage)
@@ -398,6 +449,8 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
     secondary_remaining = remaining_value(secondary.get("used_percent"))
     primary_used = used_percent_value(primary.get("used_percent"))
     secondary_used = used_percent_value(secondary.get("used_percent"))
+    primary_resets_at = primary.get("resets_at")
+    secondary_resets_at = secondary.get("resets_at")
 
     return {
         "available": True,
@@ -405,11 +458,13 @@ def usage_from_event(event: dict[str, object], source_session: Path | None = Non
         "primary_remaining_percent": f"{primary_remaining}%" if primary_remaining is not None else "--",
         "primary_remaining_value": primary_remaining,
         "primary_used_percent": primary_used,
-        "primary_resets_at": format_reset_label(primary.get("resets_at"), always_time=True),
+        "primary_resets_at": format_reset_label(primary_resets_at, always_time=True),
+        "primary_resets_at_epoch": epoch_value(primary_resets_at),
         "secondary_remaining_percent": f"{secondary_remaining}%" if secondary_remaining is not None else "--",
         "secondary_remaining_value": secondary_remaining,
         "secondary_used_percent": secondary_used,
-        "secondary_resets_at": format_reset_label(secondary.get("resets_at")),
+        "secondary_resets_at": format_reset_label(secondary_resets_at),
+        "secondary_resets_at_epoch": epoch_value(secondary_resets_at),
         "updated_at": str(event.get("timestamp", "")),
         "cached_at": "",
         "source_session": str(source_session or ""),
