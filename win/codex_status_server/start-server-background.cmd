@@ -2,6 +2,8 @@
 setlocal
 cd /d "%~dp0"
 
+if "%HOST%"=="" set "HOST=127.0.0.1"
+
 where py >nul 2>nul
 if %errorlevel%==0 (
   start "Codex Status Server" /min py -3 "%~dp0server.py"
@@ -14,13 +16,14 @@ if %errorlevel%==0 (
   goto :done
 )
 
-echo 未找到 Python。请先安装 Python 3，或把 Python 加入 PATH。
-echo 下载地址：https://www.python.org/downloads/windows/
+echo Python was not found. Install Python 3 or add Python to PATH.
+echo Download: https://www.python.org/downloads/windows/
 pause
 exit /b 1
 
 :done
 echo Codex status server started in background.
 echo Same Windows: http://127.0.0.1:8765/status
+echo LAN mode: use start-server-lan.cmd
 echo Log file: %~dp0status-server.log
 pause

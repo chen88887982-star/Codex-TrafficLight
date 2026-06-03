@@ -15,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent
 STATUS_FILE = BASE_DIR / "status.json"
 USAGE_CACHE_FILE = BASE_DIR / "usage-cache.json"
 LOG_FILE = BASE_DIR / "status-server.log"
-HOST = os.environ.get("HOST", "0.0.0.0")
+HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8765"))
 AUTO_MONITOR = os.environ.get("AUTO_MONITOR_CODEX", "1") != "0"
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -61,6 +61,7 @@ DEFAULT_USAGE = {
 
 
 status_lock = threading.Lock()
+usage_lock = threading.RLock()
 
 
 def write_log(message: str) -> None:
@@ -313,29 +314,43 @@ def format_sync_label(usage: dict[str, object]) -> str:
 
 
 def read_usage_cache() -> dict[str, object]:
-    if not USAGE_CACHE_FILE.exists():
-        return DEFAULT_USAGE.copy()
-    try:
-        data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        write_log(f"usage-cache.json read failed: {exc}")
-        return DEFAULT_USAGE.copy()
+    with usage_lock:
+        if not USAGE_CACHE_FILE.exists():
+            return DEFAULT_USAGE.copy()
+        try:
+            data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            write_log(f"usage-cache.json read failed: {exc}")
+            return DEFAULT_USAGE.copy()
 
-    usage = DEFAULT_USAGE.copy()
-    usage.update(data)
-    usage["sync_label"] = format_sync_label(usage)
+        usage = DEFAULT_USAGE.copy()
+        usage.update(data)
+        usage["sync_label"] = format_sync_label(usage)
+        return usage
+
+
+def public_usage(usage: dict[str, object]) -> dict[str, object]:
+    usage = usage.copy()
+    usage.pop("source_session", None)
     return usage
 
 
 def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
-    usage = usage.copy()
-    usage["cached_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    usage["sync_label"] = format_sync_label(usage)
-    try:
-        USAGE_CACHE_FILE.write_text(json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        write_log(f"usage-cache.json write failed: {exc}")
-    return usage
+    with usage_lock:
+        usage = usage.copy()
+        usage["cached_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        usage["sync_label"] = format_sync_label(usage)
+        try:
+            USAGE_CACHE_FILE.write_text(json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            write_log(f"usage-cache.json write failed: {exc}")
+        return usage
+
+
+def rainmeter_value(value: object) -> str:
+    if value is None:
+        return "-1"
+    return str(value)
 
 
 def remaining_percent_from_value(value: object) -> str:
@@ -493,7 +508,16 @@ def read_usage() -> dict[str, object]:
             if usage:
                 latest_usage = newer_usage(latest_usage, usage)
                 break
-    return maybe_update_usage_cache(latest_usage)
+    with usage_lock:
+        return maybe_update_usage_cache(latest_usage)
+
+
+def refresh_usage_cache_once() -> dict[str, object]:
+    with usage_lock:
+        cached = read_usage_cache()
+        if cached.get("available"):
+            return cached
+    return read_usage()
 
 
 def format_usage_delta(delta: float | None) -> str:
@@ -631,6 +655,7 @@ def codex_status_monitor() -> None:
                 for path in files:
                     positions[path] = path.stat().st_size
                 write_status("idle", "Codex 空闲")
+                refresh_usage_cache_once()
                 initialized = True
                 time.sleep(MONITOR_INTERVAL_SECONDS)
                 continue
@@ -661,7 +686,8 @@ def codex_status_monitor() -> None:
                         break
                     if '"rate_limits"' in line:
                         usage = usage_from_event(event, path)
-                        usage = maybe_update_usage_cache(usage)
+                        with usage_lock:
+                            usage = maybe_update_usage_cache(usage)
                         update_task_usage_snapshot(usage)
                     applied_status = apply_codex_event(event)
                     if applied_status in {"running", "waiting"}:
@@ -695,7 +721,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         path = self.path.rstrip("/")
         if path == "/rainmeter":
             status_data = read_status()
-            usage_data = read_usage()
+            usage_data = read_usage_cache()
             is_idle = str(status_data.get("status", "idle")) == "idle"
             status_codes = {
                 "idle": "0",
@@ -713,8 +739,8 @@ class StatusHandler(BaseHTTPRequestHandler):
                 secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
                 secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
                 task_elapsed=clean_field(task_elapsed_label(status_data)),
-                primary_value=clean_field(str(usage_data.get("primary_remaining_value") or 0)),
-                secondary_value=clean_field(str(usage_data.get("secondary_remaining_value") or 0)),
+                primary_value=clean_field(rainmeter_value(usage_data.get("primary_remaining_value"))),
+                secondary_value=clean_field(rainmeter_value(usage_data.get("secondary_remaining_value"))),
                 sync_label=clean_field(usage_data.get("sync_label") or ""),
                 task_usage_primary="" if is_idle else clean_field(status_data.get("task_usage_primary_label") or ""),
                 task_usage_secondary="" if is_idle else clean_field(status_data.get("task_usage_secondary_label") or ""),
@@ -732,7 +758,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/usage":
-            body = json.dumps(read_usage(), ensure_ascii=False, indent=2).encode("utf-8")
+            body = json.dumps(public_usage(read_usage_cache()), ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
@@ -750,7 +776,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             return
 
         status_data = read_status()
-        status_data["usage"] = read_usage()
+        status_data["usage"] = public_usage(read_usage_cache())
         body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -784,7 +810,10 @@ def main() -> int:
     write_log(f"Codex status server started on {HOST}:{PORT}")
     print(f"Codex status server: http://{HOST}:{PORT}/status")
     print(f"Local computer: http://127.0.0.1:{PORT}/status")
-    print(f"Other computer: http://THIS-COMPUTER-IP:{PORT}/status")
+    if HOST in {"0.0.0.0", "::"}:
+        print(f"Other computer: http://THIS-COMPUTER-IP:{PORT}/status")
+    else:
+        print("LAN access: set HOST=0.0.0.0 before starting the server")
     print(f"Status file: {STATUS_FILE}")
     print(f"Log file: {LOG_FILE}")
     print(f"Codex usage sessions: {CODEX_SESSIONS_DIR}")

@@ -5,13 +5,26 @@
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VariablesFile = Join-Path $ScriptDir "variables.inc"
+$content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
+$currentWidth = "208"
+$currentHeight = "760"
+
+$widthMatch = [regex]::Match($content, "(?m)^SkinWidth=(\d+)\s*$")
+if ($widthMatch.Success) {
+  $currentWidth = $widthMatch.Groups[1].Value
+}
+
+$heightMatch = [regex]::Match($content, "(?m)^SkinHeight=(\d+)\s*$")
+if ($heightMatch.Success) {
+  $currentHeight = $heightMatch.Groups[1].Value
+}
 
 if ([string]::IsNullOrWhiteSpace($Size)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
   $Size = [Microsoft.VisualBasic.Interaction]::InputBox(
-    "请输入皮肤整体尺寸，格式为 宽度,高度。例如：208,462。",
+    "请输入皮肤整体尺寸，格式为 宽度,高度。例如：208,760。",
     "Codex 交通灯皮肤尺寸",
-    "208,462"
+    "$currentWidth,$currentHeight"
   )
 }
 
@@ -46,8 +59,6 @@ if ($height -lt 360) {
 if ($height -gt 760) {
   $height = 760
 }
-
-$content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
 
 if ($content -match '(?m)^SkinWidth=.*$') {
   $content = $content -replace '(?m)^SkinWidth=.*$', "SkinWidth=$width"

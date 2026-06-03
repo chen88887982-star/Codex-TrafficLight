@@ -8,4 +8,5 @@ if [ ! -f status.json ]; then
   ./set-status.sh idle
 fi
 
+export HOST="${HOST:-127.0.0.1}"
 exec python3 server.py

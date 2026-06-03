@@ -73,7 +73,7 @@ Codex-TrafficLight
 2. 在这台 Windows 上启动状态服务，双击：
 
 ```text
-win\codex_status_server\start-server.cmd
+win\codex_status_server\start-server-lan.cmd
 ```
 
 3. 启动后不要关闭黑色命令窗口。窗口开着，就代表状态服务还在运行。
@@ -248,7 +248,7 @@ status.example.json
 4. 第一次运行前给脚本执行权限：
 
 ```bash
-chmod +x set-status.sh start.command
+chmod +x set-status.sh start.command start-lan.command
 ```
 
 如果提示 `No such file or directory`，说明你还没有进入 `mac/codex_status_server` 这个目录。先重新执行第 2 步的 `cd ...`。
@@ -256,7 +256,7 @@ chmod +x set-status.sh start.command
 5. 启动服务：
 
 ```bash
-./start.command
+./start-lan.command
 ```
 
 终端窗口不要关闭。
@@ -350,3 +350,12 @@ Rainmeter 对中文配置文件的编码比较敏感。本项目的 Rainmeter �
 ## 安全说明
 
 状态服务只提供只读 `/status` 接口，不提供远程执行命令能力。`message` 建议只写简短状态，不要写路径、账号、密钥等敏感内容。
+
+默认启动脚本只监听本机 `127.0.0.1`。如果需要让另一台电脑上的 Rainmeter 读取状态，请使用局域网启动脚本：
+
+```text
+Windows: win\codex_status_server\start-server-lan.cmd
+macOS: mac/codex_status_server/start-lan.command
+```
+
+安装皮肤时，如果目标 Rainmeter 目录里已经有 `@Resources\variables.inc`，安装脚本会先备份并保留它，避免覆盖你已调整的地址、颜色、透明度和尺寸。
