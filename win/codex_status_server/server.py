@@ -56,7 +56,7 @@ DEFAULT_USAGE = {
     "updated_at": "",
     "cached_at": "",
     "source_session": "",
-    "sync_label": "等待 Codex 写入额度",
+    "sync_label": "官方额度请在 Codex 设置 → Usage 查看",
 }
 
 
@@ -314,19 +314,9 @@ def format_sync_label(usage: dict[str, object]) -> str:
 
 
 def read_usage_cache() -> dict[str, object]:
-    with usage_lock:
-        if not USAGE_CACHE_FILE.exists():
-            return DEFAULT_USAGE.copy()
-        try:
-            data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError) as exc:
-            write_log(f"usage-cache.json read failed: {exc}")
-            return DEFAULT_USAGE.copy()
-
-        usage = DEFAULT_USAGE.copy()
-        usage.update(data)
-        usage["sync_label"] = format_sync_label(usage)
-        return usage
+    # Codex no longer guarantees the legacy rate_limits log schema. Do not
+    # surface an old usage-cache.json as if it were the live account balance.
+    return DEFAULT_USAGE.copy()
 
 
 def public_usage(usage: dict[str, object]) -> dict[str, object]:
@@ -416,24 +406,9 @@ def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]
 
 
 def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, object]:
-    cached = read_usage_cache()
-    if not usage:
-        return cached
-
-    usage_timestamp = parse_timestamp(usage.get("updated_at"))
-    cached_timestamp = parse_timestamp(cached.get("updated_at"))
-    if cached.get("available") and usage_timestamp < cached_timestamp:
-        return cached
-
-    usage = apply_conservative_usage_floor(usage, cached)
-
-    if usage_cache_needs_update(usage, cached):
-        return write_usage_cache(usage)
-
-    usage = usage.copy()
-    usage["cached_at"] = cached.get("cached_at", "")
-    usage["sync_label"] = format_sync_label(usage)
-    return usage
+    # Local session logs remain useful for task state, but are not a stable
+    # account-level balance source until Codex exposes an official endpoint.
+    return DEFAULT_USAGE.copy()
 
 
 def newer_usage(left: dict[str, object] | None, right: dict[str, object] | None) -> dict[str, object] | None:
@@ -734,16 +709,16 @@ class StatusHandler(BaseHTTPRequestHandler):
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
-                primary_remaining=clean_field(usage_data["primary_remaining_percent"] or "--"),
-                primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
-                secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
-                secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
+                primary_remaining="打开设置",
+                primary_reset="Codex 设置 → Usage",
+                secondary_remaining="Usage",
+                secondary_reset="官方余额仅在应用内显示",
                 task_elapsed=clean_field(task_elapsed_label(status_data)),
                 primary_value=clean_field(rainmeter_value(usage_data.get("primary_remaining_value"))),
                 secondary_value=clean_field(rainmeter_value(usage_data.get("secondary_remaining_value"))),
                 sync_label=clean_field(usage_data.get("sync_label") or ""),
-                task_usage_primary="" if is_idle else clean_field(status_data.get("task_usage_primary_label") or ""),
-                task_usage_secondary="" if is_idle else clean_field(status_data.get("task_usage_secondary_label") or ""),
+                task_usage_primary="",
+                task_usage_secondary="",
             )
             body = text.encode("utf-8")
             self.send_response(200)
