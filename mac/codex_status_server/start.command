@@ -9,4 +9,5 @@ if [ ! -f status.json ]; then
 fi
 
 export HOST="${HOST:-127.0.0.1}"
+export CODEX_COMMAND="${CODEX_COMMAND:-/Applications/ChatGPT.app/Contents/Resources/codex}"
 exec python3 server.py
