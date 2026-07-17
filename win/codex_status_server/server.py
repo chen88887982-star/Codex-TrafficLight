@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import queue
+import shlex
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -24,6 +27,8 @@ SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
 MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.25"))
 RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
 USAGE_STALE_SECONDS = int(os.environ.get("USAGE_STALE_SECONDS", "900"))
+ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("ACCOUNT_QUERY_TIMEOUT_SECONDS", "45"))
+CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "codex")
 
 DEFAULT_STATUS = {
     "status": "idle",
@@ -56,7 +61,8 @@ DEFAULT_USAGE = {
     "updated_at": "",
     "cached_at": "",
     "source_session": "",
-    "sync_label": "官方额度请在 Codex 设置 → Usage 查看",
+    "source": "",
+    "sync_label": "等待 Codex 账户额度查询",
 }
 
 
@@ -314,9 +320,17 @@ def format_sync_label(usage: dict[str, object]) -> str:
 
 
 def read_usage_cache() -> dict[str, object]:
-    # Codex no longer guarantees the legacy rate_limits log schema. Do not
-    # surface an old usage-cache.json as if it were the live account balance.
-    return DEFAULT_USAGE.copy()
+    with usage_lock:
+        try:
+            data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return DEFAULT_USAGE.copy()
+        if data.get("source") != "app_server":
+            return DEFAULT_USAGE.copy()
+        usage = DEFAULT_USAGE.copy()
+        usage.update(data)
+        usage["sync_label"] = format_sync_label(usage)
+        return usage
 
 
 def public_usage(usage: dict[str, object]) -> dict[str, object]:
@@ -406,9 +420,43 @@ def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]
 
 
 def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, object]:
-    # Local session logs remain useful for task state, but are not a stable
-    # account-level balance source until Codex exposes an official endpoint.
-    return DEFAULT_USAGE.copy()
+    return read_usage_cache()
+
+
+def query_live_account_usage() -> dict[str, object]:
+    process = subprocess.Popen(shlex.split(CODEX_COMMAND) + ["app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+    messages: queue.Queue[dict[str, object]] = queue.Queue()
+    def reader() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            try:
+                item = json.loads(line)
+                if isinstance(item, dict): messages.put(item)
+            except json.JSONDecodeError: pass
+    threading.Thread(target=reader, daemon=True).start()
+    def request(request_id: int, method: str, params: object) -> dict[str, object]:
+        assert process.stdin is not None
+        process.stdin.write(json.dumps({"id": request_id, "method": method, "params": params}) + "\n"); process.stdin.flush()
+        deadline = time.monotonic() + ACCOUNT_QUERY_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try: item = messages.get(timeout=0.25)
+            except queue.Empty: continue
+            if item.get("id") == request_id:
+                result = item.get("result")
+                if isinstance(result, dict): return result
+                raise RuntimeError(str(item.get("error") or "Codex account query failed"))
+        raise TimeoutError("Codex account query timed out")
+    try:
+        request(1, "initialize", {"clientInfo": {"name": "Codex-TrafficLight", "version": "1.0"}})
+        limits = request(2, "account/rateLimits/read", None)
+        request(3, "account/usage/read", None)
+    finally:
+        process.terminate()
+    snapshots = limits.get("rateLimitsByLimitId")
+    snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else limits.get("rateLimits")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("primary"), dict): raise RuntimeError("Codex returned no primary rate limit")
+    primary = snapshot["primary"]; remaining = remaining_value(primary.get("usedPercent")); credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
+    return {**DEFAULT_USAGE, "available": remaining is not None, "plan_type": str(snapshot.get("planType") or ""), "primary_remaining_percent": f"{remaining}%" if remaining is not None else "--", "primary_remaining_value": remaining, "primary_used_percent": used_percent_value(primary.get("usedPercent")), "primary_resets_at": format_reset_label(primary.get("resetsAt"), always_time=True), "primary_resets_at_epoch": epoch_value(primary.get("resetsAt")), "secondary_remaining_percent": str(credits.get("balance") or "--"), "secondary_resets_at": "Credits 余额", "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "source": "app_server"}
 
 
 def newer_usage(left: dict[str, object] | None, right: dict[str, object] | None) -> dict[str, object] | None:
@@ -488,11 +536,11 @@ def read_usage() -> dict[str, object]:
 
 
 def refresh_usage_cache_once() -> dict[str, object]:
-    with usage_lock:
-        cached = read_usage_cache()
-        if cached.get("available"):
-            return cached
-    return read_usage()
+    try:
+        return write_usage_cache(query_live_account_usage())
+    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        write_log(f"Codex live account usage query failed: {exc}")
+        return read_usage_cache()
 
 
 def format_usage_delta(delta: float | None) -> str:
@@ -709,10 +757,10 @@ class StatusHandler(BaseHTTPRequestHandler):
                 code=status_codes.get(status_data["status"], "4"),
                 message=clean_field(status_data["message"]),
                 updated_at=clean_field(status_data["updated_at"]),
-                primary_remaining="打开设置",
-                primary_reset="Codex 设置 → Usage",
-                secondary_remaining="Usage",
-                secondary_reset="官方余额仅在应用内显示",
+                primary_remaining=clean_field(usage_data["primary_remaining_percent"] or "--"),
+                primary_reset=clean_field(usage_data["primary_resets_at"] or "--"),
+                secondary_remaining=clean_field(usage_data["secondary_remaining_percent"] or "--"),
+                secondary_reset=clean_field(usage_data["secondary_resets_at"] or "--"),
                 task_elapsed=clean_field(task_elapsed_label(status_data)),
                 primary_value=clean_field(rainmeter_value(usage_data.get("primary_remaining_value"))),
                 secondary_value=clean_field(rainmeter_value(usage_data.get("secondary_remaining_value"))),

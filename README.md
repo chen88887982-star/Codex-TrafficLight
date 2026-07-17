@@ -144,16 +144,16 @@ Windows 状态服务默认使用 Python 标准库 HTTP 服务。运行电脑需�
 
 Windows 状态服务会自动监听当前用户的 Codex 会话日志，并根据对话任务状态更新灯光：任务开始、生成回复、执行工具或处理工具结果都会立即保持红灯，任务完成为绿灯，完成 45 秒后回到灰灯。
 
-状态服务会监控当前用户的 Codex 本地会话日志以更新任务状态，但不再尝试读取或推算账户剩余额度。新版 Codex 的额度与 Credits、模型和实际 token 消耗相关，而会话日志中的旧 `rate_limits` 字段并非稳定公开接口；继续显示缓存百分比会造成误导。
+状态服务会监控当前用户的 Codex 本地会话日志以更新任务状态，并通过本机已登录的 Codex App Server 查询实时账户额度。不会再从会话日志的旧 `rate_limits` 字段推算余额。
 
 ```text
 Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-如果用户把 Codex 数据目录放在别处，可以在启动服务前设置 `CODEX_HOME` 环境变量，指向自己的 `.codex` 目录。皮肤的额度区域会提示到 **Codex 设置 → Usage** 查看官方余额；本地服务继续读取日志用于交通灯状态和任务耗时。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的当前限额、重置时间与 Credits 余额；`ACCOUNT_QUERY_TIMEOUT_SECONDS` 可调整单次账户查询超时。
 
-旧版本留下的 `usage-cache.json` 会被忽略，避免把历史额度当成当前余额。当前没有公开、稳定的本地 API 可以让 Rainmeter 精确读取 Credits 或剩余额度；如 OpenAI 后续提供此类接口，服务再以官方接口为准接入。
+旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 
 如果不想保留黑色窗口，可以双击：
 
