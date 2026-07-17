@@ -151,7 +151,7 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的当前限额、重置时间与 Credits 余额；`ACCOUNT_QUERY_TIMEOUT_SECONDS` 可调整单次账户查询超时。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤只显示 App Server 返回的单一 Codex 周额度，并在跨日时显示完整重置日期和时间；`ACCOUNT_QUERY_TIMEOUT_SECONDS` 可调整单次账户查询超时。
 
 旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 

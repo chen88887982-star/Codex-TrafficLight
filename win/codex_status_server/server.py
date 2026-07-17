@@ -247,7 +247,7 @@ def format_reset_label(epoch_seconds: object, *, always_time: bool = False) -> s
     now = datetime.now().astimezone()
     if reset_at.date() == now.date():
         return reset_at.strftime("%H:%M")
-    return f"{reset_at.month}月{reset_at.day}日"
+    return f"{reset_at.month}月{reset_at.day}日 {reset_at:%H:%M}"
 
 
 def remaining_value(used_percent: object) -> int | None:
@@ -455,8 +455,22 @@ def query_live_account_usage() -> dict[str, object]:
     snapshots = limits.get("rateLimitsByLimitId")
     snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else limits.get("rateLimits")
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("primary"), dict): raise RuntimeError("Codex returned no primary rate limit")
-    primary = snapshot["primary"]; remaining = remaining_value(primary.get("usedPercent")); credits = snapshot.get("credits") if isinstance(snapshot.get("credits"), dict) else {}
-    return {**DEFAULT_USAGE, "available": remaining is not None, "plan_type": str(snapshot.get("planType") or ""), "primary_remaining_percent": f"{remaining}%" if remaining is not None else "--", "primary_remaining_value": remaining, "primary_used_percent": used_percent_value(primary.get("usedPercent")), "primary_resets_at": format_reset_label(primary.get("resetsAt"), always_time=True), "primary_resets_at_epoch": epoch_value(primary.get("resetsAt")), "secondary_remaining_percent": str(credits.get("balance") or "--"), "secondary_resets_at": "Credits 余额", "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "source": "app_server"}
+    primary = snapshot["primary"]
+    remaining = remaining_value(primary.get("usedPercent"))
+    return {
+        **DEFAULT_USAGE,
+        "available": remaining is not None,
+        "plan_type": str(snapshot.get("planType") or ""),
+        "primary_remaining_percent": f"{remaining}%" if remaining is not None else "--",
+        "primary_remaining_value": remaining,
+        "primary_used_percent": used_percent_value(primary.get("usedPercent")),
+        "primary_resets_at": format_reset_label(primary.get("resetsAt")),
+        "primary_resets_at_epoch": epoch_value(primary.get("resetsAt")),
+        "secondary_remaining_percent": "",
+        "secondary_resets_at": "",
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source": "app_server",
+    }
 
 
 def newer_usage(left: dict[str, object] | None, right: dict[str, object] | None) -> dict[str, object] | None:
