@@ -679,6 +679,7 @@ def codex_status_monitor() -> None:
     ignored_paths: set[Path] = set()
     last_success_at = 0.0
     last_running_at = 0.0
+    task_usage_refresh_pending = False
     initialized = False
 
     while True:
@@ -729,9 +730,13 @@ def codex_status_monitor() -> None:
                     applied_status = apply_codex_event(event)
                     if applied_status in {"running", "waiting"}:
                         last_running_at = time.time()
+                        task_usage_refresh_pending = True
                     elif applied_status == "success":
                         write_status("success", "Codex 任务完成")
-                        update_task_usage_snapshot(read_usage_cache())
+                        if task_usage_refresh_pending:
+                            usage = refresh_usage_cache_once()
+                            update_task_usage_snapshot(usage)
+                            task_usage_refresh_pending = False
                         last_success_at = time.time()
 
             current = read_status()
