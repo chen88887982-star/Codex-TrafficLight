@@ -420,7 +420,9 @@ def build_rainmeter_payload(
         task_title=clean_field(task_data.get("task_title") or "暂无活动任务"),
         active_label=clean_field(active_label),
         git_branch=clean_field(task_data.get("git_branch") or "--"),
-        git_change=clean_field(task_data.get("git_change_label") or "当前无修改"),
+        git_change=clean_field(
+            task_data.get("git_task_label") or task_data.get("git_change_label") or "本次 0 项  +0  -0"
+        ),
         git_state=clean_field(task_data.get("git_state_label") or ""),
         token_label=clean_field(task_data.get("token_label") or "本轮 -- tokens"),
         context_label=clean_field(task_data.get("context_label") or "上下文 --"),
@@ -428,7 +430,9 @@ def build_rainmeter_payload(
         credits_available="1" if usage_data.get("credits_available") else "0",
         credits_label=clean_field(usage_data.get("credits_label") or ""),
         model_label=clean_field(model_label),
-        git_cumulative=clean_field(task_data.get("git_cumulative_label") or "本轮无修改"),
+        git_cumulative=clean_field(
+            task_data.get("git_sync_label") or task_data.get("git_cumulative_label") or "待同步 --"
+        ),
     )
 
 

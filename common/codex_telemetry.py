@@ -339,8 +339,10 @@ class CodexTelemetry:
             "health_label": snapshot["health_label"],
             "project": "Codex",
             "task_title": "隐私模式：任务详情未共享",
+            "git_task_label": "配置令牌后显示变更",
             "git_change_label": "配置令牌后显示变更",
             "git_state_label": "",
+            "git_sync_label": "",
             "git_cumulative_label": "",
             "token_label": "本轮 -- tokens",
             "context_label": "上下文 --",
@@ -447,13 +449,18 @@ class CodexTelemetry:
             "git_files": 0,
             "git_added": 0,
             "git_deleted": 0,
+            "git_sync_files": 0,
+            "git_sync_added": 0,
+            "git_sync_deleted": 0,
             "git_commits": 0,
             "git_ahead": 0,
             "git_behind": 0,
             "git_dirty": False,
-            "git_change_label": "非 Git 项目",
+            "git_task_label": "本次 --",
+            "git_change_label": "本次 --",
             "git_state_label": "",
-            "git_cumulative_label": "",
+            "git_sync_label": "待同步 --",
+            "git_cumulative_label": "待同步 --",
         }
         if not task.cwd or not Path(task.cwd).is_dir():
             return empty
@@ -484,27 +491,12 @@ class CodexTelemetry:
             return empty
         _, branch = git("branch", "--show-current")
         baseline = task.git_sha or "HEAD"
-        diff_code, numstat = git("diff", "--numstat", "HEAD", "--")
-        name_code, names_text = git("diff", "--name-only", "HEAD", "--")
         _, porcelain = git("status", "--porcelain", "--untracked-files=all")
-        files = {line for line in names_text.splitlines() if line} if name_code == 0 else set()
-        added = 0
-        deleted = 0
-        if diff_code == 0:
-            for line in numstat.splitlines():
-                parts = line.split("\t", 2)
-                if len(parts) < 3:
-                    continue
-                if parts[0].isdigit():
-                    added += int(parts[0])
-                if parts[1].isdigit():
-                    deleted += int(parts[1])
-                files.add(parts[2])
         dirty = bool(porcelain)
+        untracked: dict[str, int] = {}
         for line in porcelain.splitlines():
             if line.startswith("?? "):
                 relative = line[3:]
-                files.add(relative)
                 candidate = Path(task.cwd) / relative
                 try:
                     content = (
@@ -514,8 +506,34 @@ class CodexTelemetry:
                     )
                 except OSError:
                     content = b""
-                if content and b"\0" not in content:
-                    added += len(content.decode("utf-8", errors="replace").splitlines())
+                untracked[relative] = (
+                    len(content.decode("utf-8", errors="replace").splitlines())
+                    if content and b"\0" not in content
+                    else 0
+                )
+
+        def diff_stats(reference: str) -> tuple[bool, set[str], int, int]:
+            diff_code, numstat = git("diff", "--numstat", reference, "--")
+            name_code, names_text = git("diff", "--name-only", reference, "--")
+            files = {line for line in names_text.splitlines() if line} if name_code == 0 else set()
+            added = 0
+            deleted = 0
+            if diff_code == 0:
+                for line in numstat.splitlines():
+                    parts = line.split("\t", 2)
+                    if len(parts) < 3:
+                        continue
+                    if parts[0].isdigit():
+                        added += int(parts[0])
+                    if parts[1].isdigit():
+                        deleted += int(parts[1])
+                    files.add(parts[2])
+            for relative, line_count in untracked.items():
+                files.add(relative)
+                added += line_count
+            return diff_code == 0 and name_code == 0, files, added, deleted
+
+        _, task_files, task_added, task_deleted = diff_stats(baseline)
 
         _, commits_text = git("rev-list", "--count", f"{baseline}..HEAD")
         try:
@@ -530,47 +548,10 @@ class CodexTelemetry:
             if len(parts) == 2 and all(part.isdigit() for part in parts):
                 behind, ahead = map(int, parts)
 
-        if files:
-            change_label = f"当前 {len(files)} 项  +{added}  -{deleted}"
+        if task_files:
+            change_label = f"本次 {len(task_files)} 项  +{task_added}  -{task_deleted}"
         else:
-            change_label = "当前无修改"
-
-        cumulative_code, cumulative_numstat = git("diff", "--numstat", baseline, "--")
-        cumulative_name_code, cumulative_names_text = git("diff", "--name-only", baseline, "--")
-        cumulative_files = (
-            {line for line in cumulative_names_text.splitlines() if line} if cumulative_name_code == 0 else set()
-        )
-        cumulative_added = 0
-        cumulative_deleted = 0
-        if cumulative_code == 0:
-            for line in cumulative_numstat.splitlines():
-                parts = line.split("\t", 2)
-                if len(parts) < 3:
-                    continue
-                if parts[0].isdigit():
-                    cumulative_added += int(parts[0])
-                if parts[1].isdigit():
-                    cumulative_deleted += int(parts[1])
-                cumulative_files.add(parts[2])
-        for line in porcelain.splitlines():
-            if line.startswith("?? "):
-                relative = line[3:]
-                cumulative_files.add(relative)
-                candidate = Path(task.cwd) / relative
-                try:
-                    content = (
-                        candidate.read_bytes()
-                        if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024
-                        else b""
-                    )
-                except OSError:
-                    content = b""
-                if content and b"\0" not in content:
-                    cumulative_added += len(content.decode("utf-8", errors="replace").splitlines())
-        if cumulative_files:
-            cumulative_label = f"本轮 {len(cumulative_files)} 项  +{cumulative_added}  -{cumulative_deleted}"
-        else:
-            cumulative_label = "本轮无修改"
+            change_label = "本次 0 项  +0  -0"
 
         if ahead and behind:
             state_label = f"云端 分叉 +{ahead}/-{behind}"
@@ -582,18 +563,32 @@ class CodexTelemetry:
             state_label = "云端 已同步"
         else:
             state_label = "云端 未跟踪"
+
+        if upstream_code == 0:
+            _, sync_files, sync_added, sync_deleted = diff_stats("@{upstream}")
+            cumulative_label = f"待同步 {len(sync_files)} 项  +{sync_added}  -{sync_deleted}"
+        else:
+            sync_files = set()
+            sync_added = 0
+            sync_deleted = 0
+            cumulative_label = "待同步 --"
         result = {
             "git_available": True,
             "git_branch": branch or task.git_branch or "--",
-            "git_files": len(files),
-            "git_added": added,
-            "git_deleted": deleted,
+            "git_files": len(task_files),
+            "git_added": task_added,
+            "git_deleted": task_deleted,
+            "git_sync_files": len(sync_files),
+            "git_sync_added": sync_added,
+            "git_sync_deleted": sync_deleted,
             "git_commits": commits,
             "git_ahead": ahead,
             "git_behind": behind,
             "git_dirty": dirty,
+            "git_task_label": change_label,
             "git_change_label": change_label,
             "git_state_label": state_label,
+            "git_sync_label": cumulative_label,
             "git_cumulative_label": cumulative_label,
         }
         self._git_cache[key] = (time.monotonic(), result.copy())
@@ -643,7 +638,9 @@ class CodexTelemetry:
             "git_ahead": 0,
             "git_behind": 0,
             "git_dirty": False,
-            "git_change_label": "当前无修改",
+            "git_task_label": "本次 0 项  +0  -0",
+            "git_change_label": "本次 0 项  +0  -0",
             "git_state_label": "",
-            "git_cumulative_label": "本轮无修改",
+            "git_sync_label": "待同步 --",
+            "git_cumulative_label": "待同步 --",
         }

@@ -135,6 +135,9 @@ class CodexTelemetryTests(unittest.TestCase):
             subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "baseline"], cwd=root, check=True)
             baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            subprocess.run(["git", "remote", "add", "origin", str(root / "remote.git")], cwd=root, check=True)
+            subprocess.run(["git", "update-ref", "refs/remotes/origin/main", baseline], cwd=root, check=True)
+            subprocess.run(["git", "branch", "--set-upstream-to=origin/main"], cwd=root, check=True)
             source.write_text("print('one')\nprint('two')\n", encoding="utf-8")
 
             tracker = CodexTelemetry(root, git_cache_seconds=0)
@@ -151,15 +154,25 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["git_added"], 1)
             self.assertEqual(snapshot["git_deleted"], 0)
             self.assertTrue(snapshot["git_dirty"])
-            self.assertEqual(snapshot["git_change_label"], "当前 1 项  +1  -0")
-            self.assertEqual(snapshot["git_cumulative_label"], "本轮 1 项  +1  -0")
+            self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
+            self.assertEqual(snapshot["git_cumulative_label"], "待同步 1 项  +1  -0")
+            self.assertEqual(snapshot["git_task_label"], "本次 1 项  +1  -0")
+            self.assertEqual(snapshot["git_sync_label"], "待同步 1 项  +1  -0")
+            self.assertEqual(snapshot["git_sync_files"], 1)
 
             subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "task change"], cwd=root, check=True)
             snapshot = tracker.snapshot()
-            self.assertEqual(snapshot["git_change_label"], "当前无修改")
-            self.assertEqual(snapshot["git_cumulative_label"], "本轮 1 项  +1  -0")
-            self.assertEqual(snapshot["git_state_label"], "云端 未跟踪")
+            self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
+            self.assertEqual(snapshot["git_cumulative_label"], "待同步 1 项  +1  -0")
+            self.assertEqual(snapshot["git_state_label"], "云端 领先 1")
+
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            subprocess.run(["git", "update-ref", "refs/remotes/origin/main", head], cwd=root, check=True)
+            snapshot = tracker.snapshot()
+            self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
+            self.assertEqual(snapshot["git_cumulative_label"], "待同步 0 项  +0  -0")
+            self.assertEqual(snapshot["git_state_label"], "云端 已同步")
 
 
 if __name__ == "__main__":

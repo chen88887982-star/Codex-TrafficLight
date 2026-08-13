@@ -47,9 +47,9 @@ class RainmeterContractTests(unittest.TestCase):
             "other_active_count": 2,
             "other_active_project": "another-project",
             "git_branch": "main",
-            "git_change_label": "2 files",
+            "git_change_label": "本次 2 项 +10 -2",
             "git_state_label": "dirty",
-            "git_cumulative_label": "task total",
+            "git_cumulative_label": "待同步 1 项 +4 -0",
             "token_label": "10K tokens",
             "context_label": "context 50%",
             "health_label": "healthy",
@@ -57,9 +57,11 @@ class RainmeterContractTests(unittest.TestCase):
             "reasoning_effort": "high",
         }
         payload = build_rainmeter_payload(status, usage, task)
-        self.assertEqual(len(payload.split("|")), 26)
+        fields = payload.split("|")
+        self.assertEqual(len(fields), 26)
         self.assertIn("project|task|another-project|main", payload)
-        self.assertTrue(payload.endswith("|task total"))
+        self.assertEqual(fields[17], "本次 2 项 +10 -2")
+        self.assertEqual(fields[25], "待同步 1 项 +4 -0")
 
     def test_task_card_and_dynamic_credits_are_present(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
