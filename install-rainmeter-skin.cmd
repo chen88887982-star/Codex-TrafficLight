@@ -31,14 +31,14 @@ if errorlevel 8 (
 
 if defined VARIABLES_BACKUP (
   copy /Y "%VARIABLES_BACKUP%" "%USER_VARIABLES%" >nul
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%USER_VARIABLES%'; $c=Get-Content -LiteralPath $p -Raw -Encoding Unicode; if ($c -match '(?m)^SkinHeight=568\s*$') { $c=$c -replace '(?m)^SkinHeight=568\s*$','SkinHeight=716'; Set-Content -LiteralPath $p -Value $c -Encoding Unicode }"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%USER_VARIABLES%'; $c=Get-Content -LiteralPath $p -Raw -Encoding Unicode; if ($c -match '(?m)^SkinHeight=(568|716)\s*$') { $c=$c -replace '(?m)^SkinHeight=(568|716)\s*$','SkinHeight=736'; Set-Content -LiteralPath $p -Value $c -Encoding Unicode }"
 )
 
 echo Installed to:
 echo %DST%
 if defined VARIABLES_BACKUP (
   echo Existing user variables preserved.
-  echo Legacy 568px height is upgraded to 716px for the task card.
+  echo Legacy 568px or 716px height is upgraded to 736px for the task card.
   echo Backup:
   echo %VARIABLES_BACKUP%
 )

@@ -64,6 +64,7 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["active_count"], 2)
             self.assertEqual(snapshot["other_active_count"], 1)
             self.assertEqual(snapshot["project"], "two")
+            self.assertEqual(snapshot["other_active_project"], "one")
 
             tracker.ingest(event("2026-08-14T01:00:05Z", "task_complete", turn_id="turn-two", duration_ms=2000), second)
             snapshot = tracker.snapshot()
@@ -115,7 +116,7 @@ class CodexTelemetryTests(unittest.TestCase):
             baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
             source.write_text("print('one')\nprint('two')\n", encoding="utf-8")
 
-            tracker = CodexTelemetry(root)
+            tracker = CodexTelemetry(root, git_cache_seconds=0)
             session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
             path = root / f"rollout-{session_id}.jsonl"
             task = tracker.task_for(path)
@@ -129,6 +130,15 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["git_added"], 1)
             self.assertEqual(snapshot["git_deleted"], 0)
             self.assertTrue(snapshot["git_dirty"])
+            self.assertEqual(snapshot["git_change_label"], "当前 1 项  +1  -0")
+            self.assertEqual(snapshot["git_cumulative_label"], "本轮 1 项  +1  -0")
+
+            subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "task change"], cwd=root, check=True)
+            snapshot = tracker.snapshot()
+            self.assertEqual(snapshot["git_change_label"], "当前无修改")
+            self.assertEqual(snapshot["git_cumulative_label"], "本轮 1 项  +1  -0")
+            self.assertEqual(snapshot["git_state_label"], "云端 未跟踪")
 
 
 if __name__ == "__main__":

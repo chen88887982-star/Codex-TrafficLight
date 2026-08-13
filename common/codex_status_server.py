@@ -395,12 +395,11 @@ def build_rainmeter_payload(
     status_data: dict[str, object], usage_data: dict[str, object], task_data: dict[str, object]
 ) -> str:
     status_codes = {"idle": "0", "running": "1", "waiting": "2", "success": "3", "error": "4"}
-    other_active = int(task_data.get("other_active_count") or 0)
-    active_label = f"另有 {other_active} 个任务" if other_active else ""
+    active_label = str(task_data.get("other_active_project") or "")
     model_label = " ".join(
         value for value in (str(task_data.get("model") or ""), str(task_data.get("reasoning_effort") or "")) if value
     )
-    return "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage_primary}|{task_usage_secondary}|{project}|{task_title}|{active_label}|{git_branch}|{git_change}|{git_state}|{token_label}|{context_label}|{health_label}|{credits_available}|{credits_label}|{model_label}".format(
+    return "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage_primary}|{task_usage_secondary}|{project}|{task_title}|{active_label}|{git_branch}|{git_change}|{git_state}|{token_label}|{context_label}|{health_label}|{credits_available}|{credits_label}|{model_label}|{git_cumulative}".format(
         code=status_codes.get(str(status_data.get("status", "error")), "4"),
         message=clean_field(
             task_data.get("stage")
@@ -422,7 +421,7 @@ def build_rainmeter_payload(
         task_title=clean_field(task_data.get("task_title") or "暂无活动任务"),
         active_label=clean_field(active_label),
         git_branch=clean_field(task_data.get("git_branch") or "--"),
-        git_change=clean_field(task_data.get("git_change_label") or "无代码变更"),
+        git_change=clean_field(task_data.get("git_change_label") or "当前无修改"),
         git_state=clean_field(task_data.get("git_state_label") or ""),
         token_label=clean_field(task_data.get("token_label") or "本轮 -- tokens"),
         context_label=clean_field(task_data.get("context_label") or "上下文 --"),
@@ -430,6 +429,7 @@ def build_rainmeter_payload(
         credits_available="1" if usage_data.get("credits_available") else "0",
         credits_label=clean_field(usage_data.get("credits_label") or ""),
         model_label=clean_field(model_label),
+        git_cumulative=clean_field(task_data.get("git_cumulative_label") or "本轮无修改"),
     )
 
 

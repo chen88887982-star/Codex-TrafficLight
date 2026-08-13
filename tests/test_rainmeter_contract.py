@@ -16,18 +16,20 @@ class RainmeterContractTests(unittest.TestCase):
     def test_chinese_configs_keep_utf16le_bom(self) -> None:
         for path in (MAIN_SKIN, SETTINGS_SKIN, VARIABLES):
             with self.subTest(path=path.name):
-                self.assertTrue(path.read_bytes().startswith(b"\xff\xfe"))
+                raw = path.read_bytes()
+                self.assertTrue(raw.startswith(b"\xff\xfe"))
+                self.assertNotEqual(raw[2:4], b"\xff\xfe")
                 path.read_text(encoding="utf-16")
 
-    def test_rainmeter_protocol_has_25_fields(self) -> None:
+    def test_rainmeter_protocol_has_26_fields(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         expression = next(line[7:] for line in text.splitlines() if line.startswith("RegExp="))
         compiled = re.compile(expression)
-        sample = "|".join(["1"] + [f"field-{index}" for index in range(2, 26)])
+        sample = "|".join(["1"] + [f"field-{index}" for index in range(2, 27)])
         match = compiled.fullmatch(sample)
         self.assertIsNotNone(match)
-        self.assertEqual(compiled.groups, 25)
-        self.assertEqual(match.group(25), "field-25")
+        self.assertEqual(compiled.groups, 26)
+        self.assertEqual(match.group(26), "field-26")
 
     def test_server_payload_matches_skin_protocol(self) -> None:
         status = {"status": "running", "message": "working", "updated_at": "now"}
@@ -43,9 +45,11 @@ class RainmeterContractTests(unittest.TestCase):
             "project": "project",
             "task_title": "task",
             "other_active_count": 2,
+            "other_active_project": "another-project",
             "git_branch": "main",
             "git_change_label": "2 files",
             "git_state_label": "dirty",
+            "git_cumulative_label": "task total",
             "token_label": "10K tokens",
             "context_label": "context 50%",
             "health_label": "healthy",
@@ -53,8 +57,9 @@ class RainmeterContractTests(unittest.TestCase):
             "reasoning_effort": "high",
         }
         payload = build_rainmeter_payload(status, usage, task)
-        self.assertEqual(len(payload.split("|")), 25)
-        self.assertIn("project|task|另有 2 个任务|main", payload)
+        self.assertEqual(len(payload.split("|")), 26)
+        self.assertIn("project|task|another-project|main", payload)
+        self.assertTrue(payload.endswith("|task total"))
 
     def test_task_card_and_dynamic_credits_are_present(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
@@ -68,7 +73,19 @@ class RainmeterContractTests(unittest.TestCase):
             "[MeasureCreditsAvailable]",
         ):
             self.assertIn(section, text)
-        self.assertIn("SkinHeight=716", VARIABLES.read_text(encoding="utf-16"))
+        self.assertIn("[MeterGitCumulative]", text)
+        self.assertIn("SkinHeight=736", VARIABLES.read_text(encoding="utf-16"))
+
+    def test_parallel_project_has_its_own_full_width_row(self) -> None:
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = {
+            name: body
+            for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)
+        }
+        parallel = sections["MeterActiveTasks"]
+        self.assertIn("X=22", parallel)
+        self.assertIn("W=164", parallel)
+        self.assertNotIn("StringAlign=Right", parallel)
 
     def test_right_aligned_task_fields_stay_inside_card(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")

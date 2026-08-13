@@ -51,7 +51,7 @@ win\codex_status_server\start-server.cmd
 - 多个任务按会话和轮次分别跟踪，显示最近活动任务和其他任务数量
 - 服务中途启动会回看最近日志，恢复仍在运行的任务
 
-项目名、任务标题、Git 变更、token 和模型信息默认处于隐私模式。要让局域网 Rainmeter 显示详情，在项目根目录创建 `status-auth.json`，格式参考 `status-auth.example.json`，然后把 Rainmeter 地址设为：
+项目名、任务标题、Git 变更、token 和模型信息默认直接显示，无需密码。需要限制局域网访问时，可在项目根目录创建 `status-auth.json`，格式参考 `status-auth.example.json`，然后把 Rainmeter 地址设为：
 
 ```text
 http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌

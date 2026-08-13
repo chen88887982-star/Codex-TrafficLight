@@ -278,6 +278,8 @@ class CodexTelemetry:
             task = candidates[0] if candidates else None
             if task is None:
                 return self._empty_snapshot()
+            other_active = [item for item in active if item is not task]
+            other_active.sort(key=lambda item: item.updated_at, reverse=True)
             self._enrich_thread(task)
             git = self._git_stats(task)
             elapsed = 0
@@ -298,6 +300,7 @@ class CodexTelemetry:
                 "task_title": task.title or task.project,
                 "active_count": len(active),
                 "other_active_count": max(0, len(active) - 1),
+                "other_active_project": other_active[0].project if other_active else "",
                 "elapsed_seconds": elapsed,
                 "model": task.model,
                 "reasoning_effort": task.reasoning_effort,
@@ -324,6 +327,7 @@ class CodexTelemetry:
             "stage": snapshot["stage"],
             "active_count": snapshot["active_count"],
             "other_active_count": snapshot["other_active_count"],
+            "other_active_project": "",
             "elapsed_seconds": snapshot["elapsed_seconds"],
             "updated_at": snapshot["updated_at"],
             "event_age_seconds": snapshot["event_age_seconds"],
@@ -332,6 +336,7 @@ class CodexTelemetry:
             "task_title": "隐私模式：任务详情未共享",
             "git_change_label": "配置令牌后显示变更",
             "git_state_label": "",
+            "git_cumulative_label": "",
             "token_label": "本轮 -- tokens",
             "context_label": "上下文 --",
         }
@@ -441,6 +446,7 @@ class CodexTelemetry:
             "git_dirty": False,
             "git_change_label": "非 Git 项目",
             "git_state_label": "",
+            "git_cumulative_label": "",
         }
         if not task.cwd or not Path(task.cwd).is_dir():
             return empty
@@ -471,8 +477,8 @@ class CodexTelemetry:
             return empty
         _, branch = git("branch", "--show-current")
         baseline = task.git_sha or "HEAD"
-        diff_code, numstat = git("diff", "--numstat", baseline, "--")
-        name_code, names_text = git("diff", "--name-only", baseline, "--")
+        diff_code, numstat = git("diff", "--numstat", "HEAD", "--")
+        name_code, names_text = git("diff", "--name-only", "HEAD", "--")
         _, porcelain = git("status", "--porcelain", "--untracked-files=all")
         files = {line for line in names_text.splitlines() if line} if name_code == 0 else set()
         added = 0
@@ -514,20 +520,55 @@ class CodexTelemetry:
                 behind, ahead = map(int, parts)
 
         if files:
-            change_label = f"{len(files)} 文件  +{added}  -{deleted}"
+            change_label = f"当前 {len(files)} 项  +{added}  -{deleted}"
         else:
-            change_label = "无代码变更"
-        state_parts: list[str] = []
-        if dirty:
-            state_parts.append("未提交")
-        elif commits:
-            state_parts.append("已提交")
+            change_label = "当前无修改"
+
+        cumulative_code, cumulative_numstat = git("diff", "--numstat", baseline, "--")
+        cumulative_name_code, cumulative_names_text = git("diff", "--name-only", baseline, "--")
+        cumulative_files = (
+            {line for line in cumulative_names_text.splitlines() if line}
+            if cumulative_name_code == 0
+            else set()
+        )
+        cumulative_added = 0
+        cumulative_deleted = 0
+        if cumulative_code == 0:
+            for line in cumulative_numstat.splitlines():
+                parts = line.split("\t", 2)
+                if len(parts) < 3:
+                    continue
+                if parts[0].isdigit():
+                    cumulative_added += int(parts[0])
+                if parts[1].isdigit():
+                    cumulative_deleted += int(parts[1])
+                cumulative_files.add(parts[2])
+        for line in porcelain.splitlines():
+            if line.startswith("?? "):
+                relative = line[3:]
+                cumulative_files.add(relative)
+                candidate = Path(task.cwd) / relative
+                try:
+                    content = candidate.read_bytes() if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024 else b""
+                except OSError:
+                    content = b""
+                if content and b"\0" not in content:
+                    cumulative_added += len(content.decode("utf-8", errors="replace").splitlines())
+        if cumulative_files:
+            cumulative_label = f"本轮 {len(cumulative_files)} 项  +{cumulative_added}  -{cumulative_deleted}"
         else:
-            state_parts.append("工作区干净")
-        if ahead:
-            state_parts.append(f"领先 {ahead}")
-        if behind:
-            state_parts.append(f"落后 {behind}")
+            cumulative_label = "本轮无修改"
+
+        if ahead and behind:
+            state_label = f"云端 分叉 +{ahead}/-{behind}"
+        elif ahead:
+            state_label = f"云端 领先 {ahead}"
+        elif behind:
+            state_label = f"云端 落后 {behind}"
+        elif upstream_code == 0:
+            state_label = "云端 已同步"
+        else:
+            state_label = "云端 未跟踪"
         result = {
             "git_available": True,
             "git_branch": branch or task.git_branch or "--",
@@ -539,7 +580,8 @@ class CodexTelemetry:
             "git_behind": behind,
             "git_dirty": dirty,
             "git_change_label": change_label,
-            "git_state_label": " · ".join(state_parts),
+            "git_state_label": state_label,
+            "git_cumulative_label": cumulative_label,
         }
         self._git_cache[key] = (time.monotonic(), result.copy())
         return result
@@ -565,6 +607,7 @@ class CodexTelemetry:
             "task_title": "暂无活动任务",
             "active_count": 0,
             "other_active_count": 0,
+            "other_active_project": "",
             "elapsed_seconds": 0,
             "model": "",
             "reasoning_effort": "",
@@ -587,6 +630,7 @@ class CodexTelemetry:
             "git_ahead": 0,
             "git_behind": 0,
             "git_dirty": False,
-            "git_change_label": "无代码变更",
+            "git_change_label": "当前无修改",
             "git_state_label": "",
+            "git_cumulative_label": "本轮无修改",
         }
