@@ -48,6 +48,14 @@ win\codex_status_server\start-server.cmd
 - 权限审核/审批评估会话：忽略，不影响主皮肤状态
 - 最终回复与 `task_complete` 都出现后：写入 `success`，绿灯
 - 完成 45 秒后：自动回到 `idle`，灰灯
+- 多个任务按会话和轮次分别跟踪，显示最近活动任务和其他任务数量
+- 服务中途启动会回看最近日志，恢复仍在运行的任务
+
+项目名、任务标题、Git 变更、token 和模型信息默认处于隐私模式。要让局域网 Rainmeter 显示详情，在项目根目录创建 `status-auth.json`，格式参考 `status-auth.example.json`，然后把 Rainmeter 地址设为：
+
+```text
+http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌
+```
 
 默认监控间隔是 0.25 秒，Rainmeter 默认 1 秒读取一次 `/rainmeter`。
 
@@ -88,6 +96,12 @@ cd $HOME\Desktop\Codex-TrafficLight\win\codex_status_server
 
 ```text
 http://127.0.0.1:8765/status
+```
+
+服务健康与任务数据：
+
+```text
+http://127.0.0.1:8765/health
 ```
 
 能看到 JSON 就表示 Rainmeter 可以读取。

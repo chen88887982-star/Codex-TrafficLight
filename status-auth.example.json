@@ -1,0 +1,5 @@
+{
+  "access_token": "请替换为只在你设备间使用的长随机字符串",
+  "expose_task_details": true,
+  "allow_cors": false
+}

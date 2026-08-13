@@ -2,6 +2,19 @@
 
 这个项目是一套通用 Rainmeter 交通灯方案。Rainmeter 固定运行在 Windows 上，Codex 可以运行在同一台 Windows、另一台 Windows，或者一台 Mac。
 
+## 0.2 任务监控面板
+
+主皮肤在原交通灯下增加了任务卡片，可以显示：
+
+- 当前项目名和 Codex 任务标题；
+- 同时运行的其他任务数量；
+- Git 分支、相对任务开始提交的文件数和增删行数；
+- 工作区是否未提交、本地领先或落后远端跟踪分支多少提交；
+- 本轮 token、上下文占用、模型和推理强度；
+- 状态服务健康度、额度缓存新鲜度和可选 Credits 余额。
+
+状态服务现在按 `session_id + turn_id` 分别管理并行任务，识别 `task_complete` 和中止事件；服务在任务执行中重启时，也会回看最近会话恢复状态。任务标题、Git 和 token 默认受隐私模式保护，只有配置访问令牌后才会通过 HTTP 输出。
+
 ## 组合方式
 
 | 装备组合 | 状态服务运行位置 | Rainmeter 配置 |
@@ -142,7 +155,7 @@ http://192.168.2.112:8765/rainmeter
 
 Windows 状态服务默认使用 Python 标准库 HTTP 服务。运行电脑需要安装 Python 3，并且命令行能识别 `py -3` 或 `python`。
 
-Windows 状态服务会自动监听当前用户的 Codex 会话日志，并根据对话任务状态更新灯光：任务开始、生成回复、执行工具或处理工具结果都会立即保持红灯，任务完成为绿灯，完成 45 秒后回到灰灯。
+Windows 状态服务会自动监听当前用户的 Codex 会话日志，并根据对话任务状态更新灯光：任务开始、生成回复、执行工具或处理工具结果都会立即保持红灯，任务完成为绿灯，完成 45 秒后回到灰灯。多个任务同时运行时会分别跟踪，皮肤优先显示最近活动任务并提示其他活动任务数量。
 
 状态服务会监控当前用户的 Codex 本地会话日志以更新任务状态，并通过本机已登录的 Codex App Server 查询实时账户额度。不会再从会话日志的旧 `rate_limits` 字段推算余额。
 
@@ -151,7 +164,7 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤只显示 App Server 返回的单一 Codex 周额度，并在跨日时显示完整重置日期和时间；`ACCOUNT_QUERY_TIMEOUT_SECONDS` 可调整单次账户查询超时。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 可调整单次账户查询超时。
 
 旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 
@@ -173,6 +186,12 @@ win\codex_status_server\stop-server.cmd
 
 ```text
 http://127.0.0.1:8765/usage
+```
+
+查看服务健康和任务遥测：
+
+```text
+http://127.0.0.1:8765/health
 ```
 
 如果是另一台 Windows 读取，就在另一台电脑浏览器打开：
@@ -347,9 +366,33 @@ cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 
 Rainmeter 对中文配置文件的编码比较敏感。本项目的 Rainmeter 文件应使用 Unicode 编码保存。如果桌面显示乱码，重新安装最新项目文件，然后在 Rainmeter 里刷新皮肤。
 
+## 隐私与访问令牌
+
+默认没有配置令牌时，`/status`、`/health` 和 `/rainmeter` 只输出灯光状态、耗时和经过脱敏的任务卡片，不会输出项目名、任务标题、Git、token 或模型详情。
+
+需要在另一台 Windows 的 Rainmeter 显示完整详情时：
+
+1. 复制根目录的 `status-auth.example.json` 为 `status-auth.json`。
+2. 把 `access_token` 换成只在你设备间使用的长随机字符串，保留 `expose_task_details: true`。
+3. `status-auth.json` 已加入 `.gitignore`，不要提交或发送给别人。
+4. 在 Rainmeter 设置页把地址写成带同一令牌的形式：
+
+```text
+http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌
+```
+
+也可以不用 JSON，改用环境变量：
+
+```text
+STATUS_ACCESS_TOKEN=你的令牌
+EXPOSE_TASK_DETAILS=1
+```
+
+只要配置了 `STATUS_ACCESS_TOKEN`，所有接口都会拒绝没有正确令牌的请求。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
+
 ## 安全说明
 
-状态服务只提供只读 `/status` 接口，不提供远程执行命令能力。`message` 建议只写简短状态，不要写路径、账号、密钥等敏感内容。
+状态服务只提供只读 `/status`、`/health`、`/usage` 和 `/rainmeter` 接口，不提供远程执行命令能力。完整任务遥测不会包含用户提示词全文或完整工作目录；项目只显示目录名。
 
 默认启动脚本只监听本机 `127.0.0.1`。如果需要让另一台电脑上的 Rainmeter 读取状态，请使用局域网启动脚本：
 
@@ -358,4 +401,25 @@ Windows: win\codex_status_server\start-server-lan.cmd
 macOS: mac/codex_status_server/start-lan.command
 ```
 
-安装皮肤时，如果目标 Rainmeter 目录里已经有 `@Resources\variables.inc`，安装脚本会先备份并保留它，避免覆盖你已调整的地址、颜色、透明度和尺寸。
+安装皮肤时，如果目标 Rainmeter 目录里已经有 `@Resources\variables.inc`，安装脚本会先备份并保留它，避免覆盖你已调整的地址、颜色、透明度和尺寸；仅会把旧版默认高度 `568` 自动迁移到任务卡片需要的 `716`。
+
+## 开发与测试
+
+项目运行只依赖 Python 标准库。建议使用项目内环境：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+PYTHONPATH=common python -m unittest discover -s tests -v
+```
+
+Windows PowerShell：
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "common"
+python -m unittest discover -s tests -v
+```
+
+Rainmeter 的 `.ini` 和 `.inc` 必须保持 UTF-16LE with BOM。提交前还应检查两端 Python 语法、Rainmeter 编码和 `git diff --check`。

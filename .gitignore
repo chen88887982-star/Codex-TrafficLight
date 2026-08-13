@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 status.local.json
+status-auth.json
 **/status.json
 **/usage-cache.json
 *.log

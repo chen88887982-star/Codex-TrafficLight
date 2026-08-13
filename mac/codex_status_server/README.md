@@ -52,6 +52,14 @@ chmod +x set-status.sh start.command
 http://Mac-IP:8765/status
 ```
 
+健康检查：
+
+```text
+http://Mac-IP:8765/health
+```
+
+服务会恢复正在执行的任务、分别跟踪并行任务，并提供项目、Git 变更和 token 遥测。详细任务信息默认处于隐私模式；跨电脑显示详情时，在项目根目录创建已忽略的 `status-auth.json`，并让 Rainmeter 使用 `http://Mac-IP:8765/rainmeter?token=你的令牌`。配置格式见根目录 `status-auth.example.json`。
+
 也可以指定端口：
 
 ```bash
