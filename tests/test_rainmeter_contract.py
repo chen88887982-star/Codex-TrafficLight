@@ -70,6 +70,17 @@ class RainmeterContractTests(unittest.TestCase):
             self.assertIn(section, text)
         self.assertIn("SkinHeight=716", VARIABLES.read_text(encoding="utf-16"))
 
+    def test_right_aligned_task_fields_stay_inside_card(self) -> None:
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = {
+            name: body
+            for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)
+        }
+        for name in ("MeterGitChange", "MeterContext", "MeterHealth"):
+            with self.subTest(section=name):
+                self.assertIn("X=186", sections[name])
+                self.assertIn("StringAlign=Right", sections[name])
+
 
 if __name__ == "__main__":
     unittest.main()
