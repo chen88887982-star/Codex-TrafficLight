@@ -7,11 +7,10 @@ import sqlite3
 import subprocess
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
-
 
 TERMINAL_STATES = {"success", "error"}
 ACTIVE_STATES = {"running", "waiting"}
@@ -141,7 +140,9 @@ class CodexTelemetry:
                     tail = fh.read().decode("utf-8", errors="replace")
             except OSError:
                 continue
-            lines = [head] + tail.splitlines()
+            lines = tail.splitlines()
+            if size > tail_bytes:
+                lines.insert(0, head)
             for line in lines:
                 try:
                     event = json.loads(line)
@@ -308,10 +309,14 @@ class CodexTelemetry:
                 "total_tokens": task.total_tokens,
                 "cached_input_tokens": task.cached_input_tokens,
                 "reasoning_tokens": task.reasoning_tokens,
-                "token_label": f"本轮 {compact_number(task.last_tokens)} tokens" if task.last_tokens else "本轮 -- tokens",
+                "token_label": f"本轮 {compact_number(task.last_tokens)} tokens"
+                if task.last_tokens
+                else "本轮 -- tokens",
                 "context_percent": context_percent,
                 "context_label": f"上下文 {context_percent}%" if task.context_window else "上下文 --",
-                "updated_at": datetime.fromtimestamp(task.updated_at).astimezone().isoformat(timespec="seconds") if task.updated_at else "",
+                "updated_at": datetime.fromtimestamp(task.updated_at).astimezone().isoformat(timespec="seconds")
+                if task.updated_at
+                else "",
                 "event_age_seconds": event_age,
                 "health_label": self._health_label(event_age, bool(active)),
                 **git,
@@ -367,7 +372,9 @@ class CodexTelemetry:
         task.stage = stage
         task.updated_at = max(task.updated_at, event_at)
 
-    def _finish_task(self, task: SessionTask, payload: dict[str, object], event_at: float, status: str, stage: str) -> None:
+    def _finish_task(
+        self, task: SessionTask, payload: dict[str, object], event_at: float, status: str, stage: str
+    ) -> None:
         completed_at = parse_timestamp(payload.get("completed_at")) or event_at
         duration_ms = payload.get("duration_ms")
         try:
@@ -500,7 +507,11 @@ class CodexTelemetry:
                 files.add(relative)
                 candidate = Path(task.cwd) / relative
                 try:
-                    content = candidate.read_bytes() if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024 else b""
+                    content = (
+                        candidate.read_bytes()
+                        if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024
+                        else b""
+                    )
                 except OSError:
                     content = b""
                 if content and b"\0" not in content:
@@ -527,9 +538,7 @@ class CodexTelemetry:
         cumulative_code, cumulative_numstat = git("diff", "--numstat", baseline, "--")
         cumulative_name_code, cumulative_names_text = git("diff", "--name-only", baseline, "--")
         cumulative_files = (
-            {line for line in cumulative_names_text.splitlines() if line}
-            if cumulative_name_code == 0
-            else set()
+            {line for line in cumulative_names_text.splitlines() if line} if cumulative_name_code == 0 else set()
         )
         cumulative_added = 0
         cumulative_deleted = 0
@@ -549,7 +558,11 @@ class CodexTelemetry:
                 cumulative_files.add(relative)
                 candidate = Path(task.cwd) / relative
                 try:
-                    content = candidate.read_bytes() if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024 else b""
+                    content = (
+                        candidate.read_bytes()
+                        if candidate.is_file() and candidate.stat().st_size <= 2 * 1024 * 1024
+                        else b""
+                    )
                 except OSError:
                     content = b""
                 if content and b"\0" not in content:

@@ -164,7 +164,7 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 可调整单次账户查询超时。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
 
 旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 
@@ -206,7 +206,7 @@ Windows 状态服务会写日志：
 win\codex_status_server\status-server.log
 ```
 
-如果 Rainmeter 一直显示连接失败，先看这个日志里有没有 `Request from`。没有请求，说明 Rainmeter 没有访问到服务；有请求但仍失败，再看 Rainmeter 的调试信息和返回内容。
+日志只记录启动、停止、异常、认证失败和未知路径，不再记录每秒一次的正常 `/rainmeter` 请求。默认单个日志最大 5 MiB、保留 3 份历史文件；可通过 `LOG_MAX_BYTES` 和 `LOG_BACKUP_COUNT` 调整。如果 Rainmeter 一直显示连接失败，可查看启动或认证错误，再检查 Rainmeter 调试信息和返回内容。
 
 旧的 `server.ps1` 只是保留作备用，不再作为默认启动方式。
 
@@ -419,6 +419,9 @@ macOS: mac/codex_status_server/start-lan.command
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m ruff check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
+python -m ruff format --check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
 PYTHONPATH=common python -m unittest discover -s tests -v
 ```
 
@@ -427,6 +430,9 @@ Windows PowerShell：
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+python -m ruff check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
+python -m ruff format --check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
 $env:PYTHONPATH = "common"
 python -m unittest discover -s tests -v
 ```

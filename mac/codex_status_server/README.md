@@ -60,6 +60,8 @@ http://Mac-IP:8765/health
 
 服务会恢复正在执行的任务、分别跟踪并行任务，并提供项目、Git 变更和 token 遥测。详细任务信息默认直接显示，无需密码；Rainmeter 使用 `http://Mac-IP:8765/rainmeter` 即可。需要限制访问时，可在项目根目录创建已忽略的 `status-auth.json`，配置格式见根目录 `status-auth.example.json`。
 
+日志只记录服务生命周期、异常、认证失败和未知路径，正常的每秒 Rainmeter 请求不会写入日志。默认日志上限为 5 MiB，并保留 3 份轮转备份。
+
 也可以指定端口：
 
 ```bash

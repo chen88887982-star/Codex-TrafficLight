@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
 import hmac
+import json
 import math
 import os
 import queue
@@ -17,14 +17,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = Path(os.environ.get("CODEX_STATUS_BASE_DIR", PROJECT_ROOT / "mac" / "codex_status_server")).resolve()
 COMMON_DIR = PROJECT_ROOT / "common"
 if str(COMMON_DIR) not in sys.path:
     sys.path.insert(0, str(COMMON_DIR))
 
-from codex_telemetry import CodexTelemetry
+from codex_telemetry import CodexTelemetry  # noqa: E402
+from service_runtime import (  # noqa: E402
+    JsonlFollower,
+    RotatingTextLog,
+    SingleFlightWorker,
+    TaskRefreshTracker,
+    atomic_write_json,
+)
 
 
 def load_private_settings() -> dict[str, object]:
@@ -56,6 +62,8 @@ MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.2
 RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
 USAGE_STALE_SECONDS = int(os.environ.get("USAGE_STALE_SECONDS", "900"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("ACCOUNT_QUERY_TIMEOUT_SECONDS", "45"))
+LOG_MAX_BYTES = int(os.environ.get("LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+LOG_BACKUP_COUNT = int(os.environ.get("LOG_BACKUP_COUNT", "3"))
 CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "").strip()
 STATUS_ACCESS_TOKEN = os.environ.get("STATUS_ACCESS_TOKEN", str(PRIVATE_SETTINGS.get("access_token") or ""))
 ALLOW_CORS = os.environ.get("ALLOW_CORS", "1" if PRIVATE_SETTINGS.get("allow_cors") else "0") == "1"
@@ -100,15 +108,18 @@ DEFAULT_USAGE = {
 }
 
 
-status_lock = threading.Lock()
+status_lock = threading.RLock()
 usage_lock = threading.RLock()
+service_log = RotatingTextLog(LOG_FILE, max_bytes=LOG_MAX_BYTES, backups=LOG_BACKUP_COUNT)
 
 
 def write_log(message: str) -> None:
     line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}"
     print(message, flush=True)
-    with LOG_FILE.open("a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
+    try:
+        service_log.write(line)
+    except OSError as exc:
+        print(f"status-server.log write failed: {exc}", flush=True)
 
 
 def is_approval_review_event(event: dict[str, object]) -> bool:
@@ -139,67 +150,71 @@ def is_approval_review_event(event: dict[str, object]) -> bool:
 
     review_answer_markers = ("risk_level", "user_authorization", "outcome", "rationale")
     if event_type == "response_item" and payload_type == "message" and str(payload.get("role", "")) == "assistant":
-        return str(payload.get("phase", "")) == "final_answer" and all(marker in payload_text for marker in review_answer_markers)
+        return str(payload.get("phase", "")) == "final_answer" and all(
+            marker in payload_text for marker in review_answer_markers
+        )
 
     if event_type == "event_msg" and payload_type == "agent_message":
-        return str(payload.get("phase", "")) == "final_answer" and all(marker in payload_text for marker in review_answer_markers)
+        return str(payload.get("phase", "")) == "final_answer" and all(
+            marker in payload_text for marker in review_answer_markers
+        )
 
     return False
 
 
 def write_status(status: str, message: str) -> None:
-    now = time.time()
-    previous = read_status() if STATUS_FILE.exists() else DEFAULT_STATUS
-    running_since = float(previous.get("running_since", 0) or 0)
-    last_elapsed_seconds = int(float(previous.get("last_elapsed_seconds", 0) or 0))
-    task_usage_start_primary = previous.get("task_usage_start_primary")
-    task_usage_start_secondary = previous.get("task_usage_start_secondary")
-    task_usage_end_primary = previous.get("task_usage_end_primary")
-    task_usage_end_secondary = previous.get("task_usage_end_secondary")
-    task_usage_label = str(previous.get("task_usage_label") or "本次 --")
-    task_usage_primary_label = str(previous.get("task_usage_primary_label") or "")
-    task_usage_secondary_label = str(previous.get("task_usage_secondary_label") or "")
-
-    if status in {"running", "waiting"}:
-        if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
-            running_since = now
-            task_usage_start_primary = None
-            task_usage_start_secondary = None
-            task_usage_end_primary = None
-            task_usage_end_secondary = None
-            task_usage_label = "本次 --"
-            task_usage_primary_label = ""
-            task_usage_secondary_label = ""
-    elif status == "success":
-        if running_since > 0:
-            last_elapsed_seconds = max(0, int(now - running_since))
-        running_since = 0.0
-    elif status in {"idle", "error"}:
-        running_since = 0.0
-        if status == "idle":
-            last_elapsed_seconds = 0
-
-    payload = {
-        "status": status,
-        "message": message,
-        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "running_since": running_since,
-        "last_elapsed_seconds": last_elapsed_seconds,
-        "task_usage_start_primary": task_usage_start_primary,
-        "task_usage_start_secondary": task_usage_start_secondary,
-        "task_usage_end_primary": task_usage_end_primary,
-        "task_usage_end_secondary": task_usage_end_secondary,
-        "task_usage_label": task_usage_label,
-        "task_usage_primary_label": task_usage_primary_label,
-        "task_usage_secondary_label": task_usage_secondary_label,
-    }
     with status_lock:
-        STATUS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        now = time.time()
+        previous = read_status() if STATUS_FILE.exists() else DEFAULT_STATUS
+        running_since = float(previous.get("running_since", 0) or 0)
+        last_elapsed_seconds = int(float(previous.get("last_elapsed_seconds", 0) or 0))
+        task_usage_start_primary = previous.get("task_usage_start_primary")
+        task_usage_start_secondary = previous.get("task_usage_start_secondary")
+        task_usage_end_primary = previous.get("task_usage_end_primary")
+        task_usage_end_secondary = previous.get("task_usage_end_secondary")
+        task_usage_label = str(previous.get("task_usage_label") or "本次 --")
+        task_usage_primary_label = str(previous.get("task_usage_primary_label") or "")
+        task_usage_secondary_label = str(previous.get("task_usage_secondary_label") or "")
+
+        if status in {"running", "waiting"}:
+            if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
+                running_since = now
+                task_usage_start_primary = None
+                task_usage_start_secondary = None
+                task_usage_end_primary = None
+                task_usage_end_secondary = None
+                task_usage_label = "本次 --"
+                task_usage_primary_label = ""
+                task_usage_secondary_label = ""
+        elif status == "success":
+            if running_since > 0:
+                last_elapsed_seconds = max(0, int(now - running_since))
+            running_since = 0.0
+        elif status in {"idle", "error"}:
+            running_since = 0.0
+            if status == "idle":
+                last_elapsed_seconds = 0
+
+        payload = {
+            "status": status,
+            "message": message,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "running_since": running_since,
+            "last_elapsed_seconds": last_elapsed_seconds,
+            "task_usage_start_primary": task_usage_start_primary,
+            "task_usage_start_secondary": task_usage_start_secondary,
+            "task_usage_end_primary": task_usage_end_primary,
+            "task_usage_end_secondary": task_usage_end_secondary,
+            "task_usage_label": task_usage_label,
+            "task_usage_primary_label": task_usage_primary_label,
+            "task_usage_secondary_label": task_usage_secondary_label,
+        }
+        atomic_write_json(STATUS_FILE, payload)
 
 
 def read_status() -> dict[str, object]:
     if not STATUS_FILE.exists():
-        return DEFAULT_STATUS
+        return DEFAULT_STATUS.copy()
 
     try:
         with status_lock:
@@ -248,27 +263,17 @@ def format_elapsed_seconds(seconds: object) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def task_elapsed_label(status_data: dict[str, object]) -> str:
-    status = str(status_data.get("status", "idle"))
-    if status in {"running", "waiting"}:
-        try:
-            running_since = float(status_data.get("running_since", 0) or 0)
-        except (TypeError, ValueError):
-            running_since = 0.0
-        if running_since > 0:
-            return format_elapsed_seconds(time.time() - running_since)
-        return "00:00"
-    if status == "success":
-        return "完成 " + format_elapsed_seconds(status_data.get("last_elapsed_seconds", 0))
-    return "--:--"
-
-
 def iter_recent_session_files(limit: int = 20) -> list[Path]:
     if not CODEX_SESSIONS_DIR.exists():
         return []
-    files = list(CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"))
-    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    return files[:limit]
+    candidates: list[tuple[float, Path]] = []
+    for path in CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"):
+        try:
+            candidates.append((path.stat().st_mtime, path))
+        except FileNotFoundError:
+            continue
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in candidates[:limit]]
 
 
 def format_reset_label(epoch_seconds: object, *, always_time: bool = False) -> str:
@@ -290,13 +295,6 @@ def remaining_value(used_percent: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return max(0, min(100, math.floor(remaining)))
-
-
-def remaining_percent(used_percent: object) -> str:
-    remaining = remaining_value(used_percent)
-    if remaining is None:
-        return "--"
-    return f"{remaining}%"
 
 
 def used_percent_value(used_percent: object) -> float | None:
@@ -379,9 +377,10 @@ def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
         usage["cached_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
         usage["sync_label"] = format_sync_label(usage)
         try:
-            USAGE_CACHE_FILE.write_text(json.dumps(usage, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            atomic_write_json(USAGE_CACHE_FILE, usage)
         except OSError as exc:
             write_log(f"usage-cache.json write failed: {exc}")
+            return read_usage_cache()
         return usage
 
 
@@ -433,12 +432,6 @@ def build_rainmeter_payload(
     )
 
 
-def remaining_percent_from_value(value: object) -> str:
-    if value is None:
-        return "--"
-    return f"{value}%"
-
-
 def extract_credits_label(usage: dict[str, object]) -> str:
     """Read an optional credits balance without assuming a fixed experimental schema."""
 
@@ -461,66 +454,6 @@ def extract_credits_label(usage: dict[str, object]) -> str:
             if isinstance(value, dict) and value is not credits:
                 pending.append(value)
     return ""
-
-
-def same_reset_cycle(usage: dict[str, object], cached: dict[str, object], prefix: str) -> bool:
-    usage_epoch = usage.get(f"{prefix}_resets_at_epoch")
-    cached_epoch = cached.get(f"{prefix}_resets_at_epoch")
-    if usage_epoch is not None and cached_epoch is not None:
-        return usage_epoch == cached_epoch
-    return usage.get(f"{prefix}_resets_at") == cached.get(f"{prefix}_resets_at")
-
-
-def apply_conservative_usage_floor(usage: dict[str, object], cached: dict[str, object]) -> dict[str, object]:
-    if not cached.get("available"):
-        return usage
-
-    usage = usage.copy()
-    for prefix in ("primary", "secondary"):
-        if not same_reset_cycle(usage, cached, prefix):
-            continue
-
-        usage_remaining = usage.get(f"{prefix}_remaining_value")
-        cached_remaining = cached.get(f"{prefix}_remaining_value")
-        if isinstance(usage_remaining, int) and isinstance(cached_remaining, int):
-            remaining = min(usage_remaining, cached_remaining)
-            usage[f"{prefix}_remaining_value"] = remaining
-            usage[f"{prefix}_remaining_percent"] = remaining_percent_from_value(remaining)
-
-        usage_used = usage.get(f"{prefix}_used_percent")
-        cached_used = cached.get(f"{prefix}_used_percent")
-        if isinstance(usage_used, (int, float)) and isinstance(cached_used, (int, float)):
-            usage[f"{prefix}_used_percent"] = max(float(usage_used), float(cached_used))
-
-    return usage
-
-
-def usage_cache_needs_update(usage: dict[str, object], cached: dict[str, object]) -> bool:
-    if not cached.get("available"):
-        return True
-
-    usage_timestamp = parse_timestamp(usage.get("updated_at"))
-    cached_timestamp = parse_timestamp(cached.get("updated_at"))
-    if usage_timestamp < cached_timestamp:
-        return False
-    if usage_timestamp > cached_timestamp:
-        return True
-
-    fields = (
-        "updated_at",
-        "source_session",
-        "primary_used_percent",
-        "primary_resets_at_epoch",
-        "secondary_used_percent",
-        "secondary_resets_at_epoch",
-        "primary_remaining_value",
-        "secondary_remaining_value",
-    )
-    return any(usage.get(field) != cached.get(field) for field in fields)
-
-
-def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, object]:
-    return read_usage_cache()
 
 
 def resolve_codex_command() -> list[str]:
@@ -546,37 +479,75 @@ def resolve_codex_command() -> list[str]:
 
 
 def query_live_account_usage() -> dict[str, object]:
-    process = subprocess.Popen(resolve_codex_command() + ["app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+    process = subprocess.Popen(
+        resolve_codex_command() + ["app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+    )
     messages: queue.Queue[dict[str, object]] = queue.Queue()
+
     def reader() -> None:
         assert process.stdout is not None
         for line in process.stdout:
             try:
                 item = json.loads(line)
-                if isinstance(item, dict): messages.put(item)
-            except json.JSONDecodeError: pass
-    threading.Thread(target=reader, daemon=True).start()
+                if isinstance(item, dict):
+                    messages.put(item)
+            except json.JSONDecodeError:
+                continue
+
+    reader_thread = threading.Thread(target=reader, name="codex-account-reader", daemon=True)
+    reader_thread.start()
+    deadline = time.monotonic() + ACCOUNT_QUERY_TIMEOUT_SECONDS
+
     def request(request_id: int, method: str, params: object) -> dict[str, object]:
         assert process.stdin is not None
-        process.stdin.write(json.dumps({"id": request_id, "method": method, "params": params}) + "\n"); process.stdin.flush()
-        deadline = time.monotonic() + ACCOUNT_QUERY_TIMEOUT_SECONDS
+        process.stdin.write(json.dumps({"id": request_id, "method": method, "params": params}) + "\n")
+        process.stdin.flush()
         while time.monotonic() < deadline:
-            try: item = messages.get(timeout=0.25)
-            except queue.Empty: continue
+            try:
+                item = messages.get(timeout=min(0.25, max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                continue
             if item.get("id") == request_id:
                 result = item.get("result")
-                if isinstance(result, dict): return result
+                if isinstance(result, dict):
+                    return result
                 raise RuntimeError(str(item.get("error") or "Codex account query failed"))
         raise TimeoutError("Codex account query timed out")
+
+    account_usage: dict[str, object] = {}
     try:
         request(1, "initialize", {"clientInfo": {"name": "Codex-TrafficLight", "version": "1.0"}})
         limits = request(2, "account/rateLimits/read", None)
-        account_usage = request(3, "account/usage/read", None)
+        try:
+            account_usage = request(3, "account/usage/read", None)
+        except (RuntimeError, TimeoutError) as exc:
+            write_log(f"Codex credits query skipped: {exc}")
     finally:
-        process.terminate()
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        reader_thread.join(timeout=1)
+        if process.stdout is not None:
+            process.stdout.close()
     snapshots = limits.get("rateLimitsByLimitId")
     snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else limits.get("rateLimits")
-    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("primary"), dict): raise RuntimeError("Codex returned no primary rate limit")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("primary"), dict):
+        raise RuntimeError("Codex returned no primary rate limit")
     primary = snapshot["primary"]
     remaining = remaining_value(primary.get("usedPercent"))
     credits_label = extract_credits_label(account_usage)
@@ -596,82 +567,6 @@ def query_live_account_usage() -> dict[str, object]:
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "app_server",
     }
-
-
-def newer_usage(left: dict[str, object] | None, right: dict[str, object] | None) -> dict[str, object] | None:
-    if left is None:
-        return right
-    if right is None:
-        return left
-
-    left_timestamp = parse_timestamp(left.get("updated_at"))
-    right_timestamp = parse_timestamp(right.get("updated_at"))
-    if right_timestamp > left_timestamp:
-        return right
-    return left
-
-
-def usage_from_event(event: dict[str, object], source_session: Path | None = None) -> dict[str, object] | None:
-    rate_limits = event.get("rate_limits")
-    payload = event.get("payload")
-    if rate_limits is None and isinstance(payload, dict):
-        rate_limits = payload.get("rate_limits")
-    if not isinstance(rate_limits, dict):
-        return None
-    primary = rate_limits.get("primary")
-    secondary = rate_limits.get("secondary")
-    if not isinstance(primary, dict) or not isinstance(secondary, dict):
-        return None
-    primary_remaining = remaining_value(primary.get("used_percent"))
-    secondary_remaining = remaining_value(secondary.get("used_percent"))
-    primary_used = used_percent_value(primary.get("used_percent"))
-    secondary_used = used_percent_value(secondary.get("used_percent"))
-    primary_resets_at = primary.get("resets_at")
-    secondary_resets_at = secondary.get("resets_at")
-
-    return {
-        "available": True,
-        "plan_type": str(rate_limits.get("plan_type") or ""),
-        "primary_remaining_percent": f"{primary_remaining}%" if primary_remaining is not None else "--",
-        "primary_remaining_value": primary_remaining,
-        "primary_used_percent": primary_used,
-        "primary_resets_at": format_reset_label(primary_resets_at, always_time=True),
-        "primary_resets_at_epoch": epoch_value(primary_resets_at),
-        "secondary_remaining_percent": f"{secondary_remaining}%" if secondary_remaining is not None else "--",
-        "secondary_remaining_value": secondary_remaining,
-        "secondary_used_percent": secondary_used,
-        "secondary_resets_at": format_reset_label(secondary_resets_at),
-        "secondary_resets_at_epoch": epoch_value(secondary_resets_at),
-        "updated_at": str(event.get("timestamp", "")),
-        "cached_at": "",
-        "source_session": str(source_session or ""),
-        "sync_label": "",
-    }
-
-
-def read_usage() -> dict[str, object]:
-    latest_usage: dict[str, object] | None = None
-    for path in iter_recent_session_files():
-        try:
-            with path.open("rb") as fh:
-                size = path.stat().st_size
-                fh.seek(max(0, size - 512 * 1024))
-                chunk = fh.read().decode("utf-8", errors="replace")
-        except OSError:
-            continue
-        for line in reversed(chunk.splitlines()):
-            if '"rate_limits"' not in line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            usage = usage_from_event(event, path)
-            if usage:
-                latest_usage = newer_usage(latest_usage, usage)
-                break
-    with usage_lock:
-        return maybe_update_usage_cache(latest_usage)
 
 
 def refresh_usage_cache_once() -> dict[str, object]:
@@ -709,102 +604,52 @@ def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
     if primary_used is None and secondary_used is None:
         return
 
-    status_data = read_status()
-    status = str(status_data.get("status", "idle"))
-    if status not in {"running", "waiting", "success"}:
-        return
-
-    start_primary = status_data.get("task_usage_start_primary")
-    start_secondary = status_data.get("task_usage_start_secondary")
-    if start_primary is None and primary_used is not None:
-        start_primary = primary_used
-    if start_secondary is None and secondary_used is not None:
-        start_secondary = secondary_used
-
-    primary_delta = None
-    secondary_delta = None
-    if start_primary is not None and primary_used is not None:
-        primary_delta = float(primary_used) - float(start_primary)
-    if start_secondary is not None and secondary_used is not None:
-        secondary_delta = float(secondary_used) - float(start_secondary)
-
-    status_data["task_usage_start_primary"] = start_primary
-    status_data["task_usage_start_secondary"] = start_secondary
-    status_data["task_usage_end_primary"] = primary_used
-    status_data["task_usage_end_secondary"] = secondary_used
-    status_data["task_usage_label"] = format_task_usage_label(primary_delta, secondary_delta)
-    status_data["task_usage_primary_label"] = format_usage_delta(primary_delta)
-    status_data["task_usage_secondary_label"] = format_usage_delta(secondary_delta)
-
     with status_lock:
-        STATUS_FILE.write_text(json.dumps(status_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        status_data = read_status()
+        status = str(status_data.get("status", "idle"))
+        if status not in {"running", "waiting", "success"}:
+            return
+
+        start_primary = status_data.get("task_usage_start_primary")
+        start_secondary = status_data.get("task_usage_start_secondary")
+        if start_primary is None and primary_used is not None:
+            start_primary = primary_used
+        if start_secondary is None and secondary_used is not None:
+            start_secondary = secondary_used
+
+        primary_delta = None
+        secondary_delta = None
+        if start_primary is not None and primary_used is not None:
+            primary_delta = float(primary_used) - float(start_primary)
+        if start_secondary is not None and secondary_used is not None:
+            secondary_delta = float(secondary_used) - float(start_secondary)
+
+        status_data["task_usage_start_primary"] = start_primary
+        status_data["task_usage_start_secondary"] = start_secondary
+        status_data["task_usage_end_primary"] = primary_used
+        status_data["task_usage_end_secondary"] = secondary_used
+        status_data["task_usage_label"] = format_task_usage_label(primary_delta, secondary_delta)
+        status_data["task_usage_primary_label"] = format_usage_delta(primary_delta)
+        status_data["task_usage_secondary_label"] = format_usage_delta(secondary_delta)
+        atomic_write_json(STATUS_FILE, status_data)
 
 
-def apply_codex_event(event: dict[str, object]) -> str:
-    event_type = str(event.get("type", ""))
-    payload = event.get("payload", {})
-    if not isinstance(payload, dict):
-        payload = {}
+def refresh_usage_and_task_snapshot() -> None:
+    try:
+        update_task_usage_snapshot(refresh_usage_cache_once())
+    except OSError as exc:
+        write_log(f"Codex usage snapshot update failed: {exc}")
 
-    payload_type = str(payload.get("type", ""))
-    if event_type == "event_msg" and payload_type in {"approval_request", "permission_request", "user_input_requested"}:
-        write_status("waiting", "Codex 等待用户确认")
-        update_task_usage_snapshot(read_usage_cache())
-        return "waiting"
 
-    if event_type == "response_item" and payload_type == "function_call":
-        arguments = str(payload.get("arguments", ""))
-        if "require_escalated" in arguments:
-            write_status("waiting", "Codex 等待用户确认")
-            update_task_usage_snapshot(read_usage_cache())
-            return "waiting"
-
-    if event_type == "event_msg" and payload_type == "task_started":
-        write_status("running", "Codex 正在处理任务")
-        update_task_usage_snapshot(read_usage_cache())
-        return "running"
-
-    if event_type == "response_item" and payload_type == "function_call":
-        name = str(payload.get("name", "工具"))
-        write_status("running", f"Codex 正在执行 {name}")
-        update_task_usage_snapshot(read_usage_cache())
-        return "running"
-
-    if event_type == "response_item" and payload_type == "function_call_output":
-        write_status("running", "Codex 正在处理工具结果")
-        update_task_usage_snapshot(read_usage_cache())
-        return "running"
-
-    if event_type == "response_item" and payload_type in {"reasoning", "message"}:
-        phase = str(payload.get("phase", ""))
-        if phase != "final_answer":
-            write_status("running", "Codex 正在生成回复")
-            update_task_usage_snapshot(read_usage_cache())
-            return "running"
-        if payload_type == "message" and str(payload.get("role", "")) == "assistant":
-            return "success"
-
-    if event_type == "event_msg" and payload_type == "agent_message":
-        phase = str(payload.get("phase", ""))
-        if phase != "final_answer":
-            write_status("running", "Codex 正在处理任务")
-            update_task_usage_snapshot(read_usage_cache())
-            return "running"
-        return "success"
-
-    if event_type == "event_msg" and payload_type == "task_complete":
-        return ""
-
-    return ""
+usage_refresh_worker = SingleFlightWorker(refresh_usage_and_task_snapshot, name="codex-usage-refresh")
 
 
 def codex_status_monitor() -> None:
     write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
-    positions: dict[Path, int] = {}
+    follower = JsonlFollower()
     ignored_paths: set[Path] = set()
     last_success_at = 0.0
-    pending_usage_refresh: set[tuple[str, str]] = set()
-    refreshed_tasks: set[tuple[str, str]] = set()
+    refresh_tracker = TaskRefreshTracker()
     initialized = False
 
     while True:
@@ -817,17 +662,20 @@ def codex_status_monitor() -> None:
             if not initialized:
                 TELEMETRY.rebuild(files)
                 for path in files:
-                    positions[path] = path.stat().st_size
+                    try:
+                        follower.start_at_end(path)
+                    except FileNotFoundError:
+                        continue
                     task = TELEMETRY.task_for(path)
                     if task.status in {"running", "waiting"}:
-                        pending_usage_refresh.add((str(path), task.turn_id or task.session_id))
+                        refresh_tracker.mark_active((str(path), task.turn_id or task.session_id))
                 snapshot = TELEMETRY.snapshot()
                 if snapshot["status"] in {"running", "waiting"}:
                     write_status(str(snapshot["status"]), str(snapshot["stage"]))
                     update_task_usage_snapshot(read_usage_cache())
                 else:
                     write_status("idle", "Codex 空闲")
-                refresh_usage_cache_once()
+                usage_refresh_worker.request()
                 initialized = True
                 time.sleep(MONITOR_INTERVAL_SECONDS)
                 continue
@@ -836,15 +684,7 @@ def codex_status_monitor() -> None:
                 if path in ignored_paths:
                     continue
 
-                if path not in positions:
-                    positions[path] = 0
-
-                with path.open("r", encoding="utf-8", errors="replace") as fh:
-                    fh.seek(positions[path])
-                    lines = fh.readlines()
-                    positions[path] = fh.tell()
-
-                for line in lines:
+                for line in follower.read_lines(path):
                     line = line.strip()
                     if not line:
                         continue
@@ -857,23 +697,15 @@ def codex_status_monitor() -> None:
                         TELEMETRY.mark_ignored(path)
                         write_log(f"Ignored approval review session: {path}")
                         break
-                    if '"rate_limits"' in line:
-                        usage = usage_from_event(event, path)
-                        with usage_lock:
-                            usage = maybe_update_usage_cache(usage)
-                        update_task_usage_snapshot(usage)
                     applied_status = TELEMETRY.ingest(event, path)
                     task = TELEMETRY.task_for(path)
                     task_key = (str(path), task.turn_id or task.session_id)
                     if applied_status in {"running", "waiting"}:
-                        pending_usage_refresh.add(task_key)
+                        refresh_tracker.mark_active(task_key)
                         update_task_usage_snapshot(read_usage_cache())
                     elif applied_status in {"success", "error"}:
-                        if applied_status == "success" and task_key in pending_usage_refresh and task_key not in refreshed_tasks:
-                            usage = refresh_usage_cache_once()
-                            update_task_usage_snapshot(usage)
-                            refreshed_tasks.add(task_key)
-                        pending_usage_refresh.discard(task_key)
+                        if refresh_tracker.complete(task_key, success=applied_status == "success"):
+                            usage_refresh_worker.request()
                         if applied_status == "success":
                             last_success_at = time.time()
 
@@ -887,6 +719,10 @@ def codex_status_monitor() -> None:
 
             current = read_status()
             now = time.time()
+            watched_paths = set(files)
+            follower.prune(watched_paths)
+            ignored_paths.intersection_update(watched_paths)
+            refresh_tracker.prune(watched_paths)
             if current.get("status") == "success" and last_success_at and now - last_success_at > SUCCESS_HOLD_SECONDS:
                 write_status("idle", "Codex 空闲")
                 last_success_at = 0.0
@@ -926,10 +762,9 @@ class StatusHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
-        write_log(f"Request from {self.client_address[0]}:{self.client_address[1]}: GET {path}")
         if not self.authorized(query):
             self.send_body(403, b"Forbidden", "text/plain; charset=utf-8")
-            write_log("Response 403")
+            write_log(f"Request denied from {self.client_address[0]}: GET {path}")
             return
 
         if path == "/rainmeter":
@@ -939,29 +774,30 @@ class StatusHandler(BaseHTTPRequestHandler):
             text = build_rainmeter_payload(status_data, usage_data, task_data)
             body = text.encode("utf-8")
             self.send_body(200, body, "text/plain; charset=utf-8")
-            write_log("Response 200 rainmeter")
             return
 
         if path == "/usage":
             body = json.dumps(public_usage(read_usage_cache()), ensure_ascii=False, indent=2).encode("utf-8")
             self.send_body(200, body, "application/json; charset=utf-8")
-            write_log("Response 200 usage")
             return
 
         if path == "/health":
             task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
             body = json.dumps(
-                {"status": "ok", "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"), "task": task_data},
+                {
+                    "status": "ok",
+                    "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    "task": task_data,
+                },
                 ensure_ascii=False,
                 indent=2,
             ).encode("utf-8")
             self.send_body(200, body, "application/json; charset=utf-8")
-            write_log("Response 200 health")
             return
 
         if path != "/status":
             self.send_error(404, "Not Found")
-            write_log("Response 404")
+            write_log(f"Unknown request from {self.client_address[0]}: GET {path}")
             return
 
         status_data = read_status()
@@ -969,7 +805,6 @@ class StatusHandler(BaseHTTPRequestHandler):
         status_data["task"] = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
         body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_body(200, body, "application/json; charset=utf-8")
-        write_log("Response 200 status.json")
 
     def log_message(self, fmt: str, *args: object) -> None:
         return
@@ -982,7 +817,7 @@ class StatusServer(ThreadingHTTPServer):
 
 def main() -> int:
     if not STATUS_FILE.exists():
-        STATUS_FILE.write_text(json.dumps(DEFAULT_STATUS, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_write_json(STATUS_FILE, DEFAULT_STATUS)
 
     try:
         server = StatusServer((HOST, PORT), StatusHandler)

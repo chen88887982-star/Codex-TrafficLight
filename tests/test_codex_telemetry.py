@@ -21,8 +21,9 @@ def event(timestamp: str, payload_type: str, **payload: object) -> dict[str, obj
 
 class CodexTelemetryTests(unittest.TestCase):
     def test_codex_command_uses_path_when_no_override_is_set(self) -> None:
-        with patch("codex_status_server.CODEX_COMMAND", ""), patch(
-            "codex_status_server.shutil.which", return_value="/opt/codex/bin/codex"
+        with (
+            patch("codex_status_server.CODEX_COMMAND", ""),
+            patch("codex_status_server.shutil.which", return_value="/opt/codex/bin/codex"),
         ):
             self.assertEqual(resolve_codex_command(), ["/opt/codex/bin/codex"])
 
@@ -51,15 +52,27 @@ class CodexTelemetryTests(unittest.TestCase):
             first = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
             second = root / "rollout-019ffd18-a03f-7cd2-a003-9521a17e3090.jsonl"
             tracker.ingest(
-                {"timestamp": "2026-08-14T01:00:00Z", "type": "session_meta", "payload": {"id": "019ffd23-fd68-7952-afc5-78495e834d2e", "cwd": str(root / "one")}},
+                {
+                    "timestamp": "2026-08-14T01:00:00Z",
+                    "type": "session_meta",
+                    "payload": {"id": "019ffd23-fd68-7952-afc5-78495e834d2e", "cwd": str(root / "one")},
+                },
                 first,
             )
             tracker.ingest(
-                {"timestamp": "2026-08-14T01:00:01Z", "type": "session_meta", "payload": {"id": "019ffd18-a03f-7cd2-a003-9521a17e3090", "cwd": str(root / "two")}},
+                {
+                    "timestamp": "2026-08-14T01:00:01Z",
+                    "type": "session_meta",
+                    "payload": {"id": "019ffd18-a03f-7cd2-a003-9521a17e3090", "cwd": str(root / "two")},
+                },
                 second,
             )
-            tracker.ingest(event("2026-08-14T01:00:02Z", "task_started", turn_id="turn-one", started_at=1786669202), first)
-            tracker.ingest(event("2026-08-14T01:00:03Z", "task_started", turn_id="turn-two", started_at=1786669203), second)
+            tracker.ingest(
+                event("2026-08-14T01:00:02Z", "task_started", turn_id="turn-one", started_at=1786669202), first
+            )
+            tracker.ingest(
+                event("2026-08-14T01:00:03Z", "task_started", turn_id="turn-two", started_at=1786669203), second
+            )
             snapshot = tracker.snapshot()
             self.assertEqual(snapshot["active_count"], 2)
             self.assertEqual(snapshot["other_active_count"], 1)
@@ -77,7 +90,11 @@ class CodexTelemetryTests(unittest.TestCase):
             session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
             session = root / f"rollout-{session_id}.jsonl"
             records = [
-                {"timestamp": "2026-08-14T01:00:00Z", "type": "session_meta", "payload": {"id": session_id, "cwd": str(root / "project")}},
+                {
+                    "timestamp": "2026-08-14T01:00:00Z",
+                    "type": "session_meta",
+                    "payload": {"id": session_id, "cwd": str(root / "project")},
+                },
                 event("2026-08-14T01:00:01Z", "task_started", turn_id="turn", started_at=1786669201),
                 {"timestamp": "2026-08-14T01:00:02Z", "type": "response_item", "payload": {"type": "reasoning"}},
             ]
@@ -94,7 +111,11 @@ class CodexTelemetryTests(unittest.TestCase):
             tracker = CodexTelemetry(root)
             path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
             tracker.ingest(
-                {"timestamp": "2026-08-14T01:00:00Z", "type": "session_meta", "payload": {"id": "019ffd23-fd68-7952-afc5-78495e834d2e", "cwd": str(root / "secret-project")}},
+                {
+                    "timestamp": "2026-08-14T01:00:00Z",
+                    "type": "session_meta",
+                    "payload": {"id": "019ffd23-fd68-7952-afc5-78495e834d2e", "cwd": str(root / "secret-project")},
+                },
                 path,
             )
             tracker.ingest(event("2026-08-14T01:00:01Z", "task_started", turn_id="turn", started_at=1786669201), path)

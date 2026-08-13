@@ -8,6 +8,7 @@ status-auth.json
 **/status.json
 **/usage-cache.json
 *.log
+*.log.*
 status-server.log
 *.tmp
 Thumbs.db
