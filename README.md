@@ -13,7 +13,7 @@
 - 本轮 token、上下文占用、模型和推理强度；
 - 状态服务健康度、额度缓存新鲜度和可选 Credits 余额。
 
-状态服务现在按 `session_id + turn_id` 分别管理并行任务，识别 `task_complete` 和中止事件；服务在任务执行中重启时，也会回看最近会话恢复状态。任务标题、Git 和 token 默认受隐私模式保护，只有配置访问令牌后才会通过 HTTP 输出。
+状态服务现在按 `session_id + turn_id` 分别管理并行任务，识别 `task_complete` 和中止事件；服务在任务执行中重启时，也会回看最近会话恢复状态。项目、任务标题、Git、token 和模型详情默认直接提供给 Rainmeter，无需配置访问令牌。
 
 ## 组合方式
 
@@ -366,14 +366,18 @@ cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 
 Rainmeter 对中文配置文件的编码比较敏感。本项目的 Rainmeter 文件应使用 Unicode 编码保存。如果桌面显示乱码，重新安装最新项目文件，然后在 Rainmeter 里刷新皮肤。
 
-## 隐私与访问令牌
+## 任务详情与可选访问令牌
 
-默认没有配置令牌时，`/status`、`/health` 和 `/rainmeter` 只输出灯光状态、耗时和经过脱敏的任务卡片，不会输出项目名、任务标题、Git、token 或模型详情。
+默认情况下，`/status`、`/health` 和 `/rainmeter` 会直接输出项目名、任务标题、Git、token 和模型详情，Rainmeter 地址不需要附加密码：
 
-需要在另一台 Windows 的 Rainmeter 显示完整详情时：
+```text
+http://运行Codex电脑的IP:8765/rainmeter
+```
+
+如果以后需要限制访问，可以选择启用令牌：
 
 1. 复制根目录的 `status-auth.example.json` 为 `status-auth.json`。
-2. 把 `access_token` 换成只在你设备间使用的长随机字符串，保留 `expose_task_details: true`。
+2. 把 `access_token` 换成只在你设备间使用的长随机字符串。
 3. `status-auth.json` 已加入 `.gitignore`，不要提交或发送给别人。
 4. 在 Rainmeter 设置页把地址写成带同一令牌的形式：
 
@@ -381,11 +385,16 @@ Rainmeter 对中文配置文件的编码比较敏感。本项目的 Rainmeter �
 http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌
 ```
 
-也可以不用 JSON，改用环境变量：
+也可以不用 JSON，改用环境变量启用令牌：
 
 ```text
 STATUS_ACCESS_TOKEN=你的令牌
-EXPOSE_TASK_DETAILS=1
+```
+
+如果只想临时隐藏详情，可以单独设置：
+
+```text
+EXPOSE_TASK_DETAILS=0
 ```
 
 只要配置了 `STATUS_ACCESS_TOKEN`，所有接口都会拒绝没有正确令牌的请求。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。

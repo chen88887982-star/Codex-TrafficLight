@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codex_status_server import extract_credits_label
+from codex_status_server import extract_credits_label, resolve_expose_task_details
 from codex_telemetry import CodexTelemetry, count_unified_diff, friendly_tool_stage
 
 
@@ -19,6 +19,11 @@ def event(timestamp: str, payload_type: str, **payload: object) -> dict[str, obj
 
 
 class CodexTelemetryTests(unittest.TestCase):
+    def test_task_details_are_visible_by_default_without_token(self) -> None:
+        self.assertTrue(resolve_expose_task_details({}, {}))
+        self.assertTrue(resolve_expose_task_details({"access_token": ""}, {}))
+        self.assertFalse(resolve_expose_task_details({}, {"EXPOSE_TASK_DETAILS": "0"}))
+
     def test_counts_patch_lines_without_headers(self) -> None:
         diff = "@@ -1,2 +1,3 @@\n-old\n+new\n+extra\n context\n"
         self.assertEqual(count_unified_diff(diff), (2, 1))

@@ -35,6 +35,12 @@ def load_private_settings() -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
+def resolve_expose_task_details(settings: dict[str, object], environ: dict[str, str]) -> bool:
+    configured = settings.get("expose_task_details", True)
+    default = "1" if configured is not False else "0"
+    return environ.get("EXPOSE_TASK_DETAILS", default) == "1"
+
+
 PRIVATE_SETTINGS = load_private_settings()
 STATUS_FILE = BASE_DIR / "status.json"
 USAGE_CACHE_FILE = BASE_DIR / "usage-cache.json"
@@ -52,10 +58,7 @@ ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("ACCOUNT_QUERY_TIMEOUT_SECO
 CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "codex")
 STATUS_ACCESS_TOKEN = os.environ.get("STATUS_ACCESS_TOKEN", str(PRIVATE_SETTINGS.get("access_token") or ""))
 ALLOW_CORS = os.environ.get("ALLOW_CORS", "1" if PRIVATE_SETTINGS.get("allow_cors") else "0") == "1"
-EXPOSE_TASK_DETAILS = (
-    os.environ.get("EXPOSE_TASK_DETAILS", "1" if PRIVATE_SETTINGS.get("expose_task_details") else "0") == "1"
-    and bool(STATUS_ACCESS_TOKEN)
-)
+EXPOSE_TASK_DETAILS = resolve_expose_task_details(PRIVATE_SETTINGS, os.environ)
 TELEMETRY = CodexTelemetry(CODEX_HOME)
 
 DEFAULT_STATUS = {
