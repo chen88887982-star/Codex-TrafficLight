@@ -7,6 +7,7 @@ import math
 import os
 import queue
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -55,7 +56,7 @@ MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.2
 RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
 USAGE_STALE_SECONDS = int(os.environ.get("USAGE_STALE_SECONDS", "900"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("ACCOUNT_QUERY_TIMEOUT_SECONDS", "45"))
-CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "codex")
+CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "").strip()
 STATUS_ACCESS_TOKEN = os.environ.get("STATUS_ACCESS_TOKEN", str(PRIVATE_SETTINGS.get("access_token") or ""))
 ALLOW_CORS = os.environ.get("ALLOW_CORS", "1" if PRIVATE_SETTINGS.get("allow_cors") else "0") == "1"
 EXPOSE_TASK_DETAILS = resolve_expose_task_details(PRIVATE_SETTINGS, os.environ)
@@ -522,8 +523,30 @@ def maybe_update_usage_cache(usage: dict[str, object] | None) -> dict[str, objec
     return read_usage_cache()
 
 
+def resolve_codex_command() -> list[str]:
+    if CODEX_COMMAND:
+        return shlex.split(CODEX_COMMAND, posix=os.name != "nt")
+
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            bundled_cli_dir = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+            candidates = [path for path in bundled_cli_dir.glob("*/codex.exe") if path.is_file()]
+            if candidates:
+                return [str(max(candidates, key=lambda path: path.stat().st_mtime))]
+
+    command_on_path = shutil.which("codex")
+    if command_on_path:
+        return [command_on_path]
+
+    raise RuntimeError(
+        "Codex CLI was not found. Install/open Codex Desktop, add codex to PATH, "
+        "or set CODEX_COMMAND to the full Codex executable path."
+    )
+
+
 def query_live_account_usage() -> dict[str, object]:
-    process = subprocess.Popen(shlex.split(CODEX_COMMAND) + ["app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
+    process = subprocess.Popen(resolve_codex_command() + ["app-server", "--stdio"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1)
     messages: queue.Queue[dict[str, object]] = queue.Queue()
     def reader() -> None:
         assert process.stdout is not None

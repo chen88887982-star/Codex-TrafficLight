@@ -5,8 +5,9 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from codex_status_server import extract_credits_label, resolve_expose_task_details
+from codex_status_server import extract_credits_label, resolve_codex_command, resolve_expose_task_details
 from codex_telemetry import CodexTelemetry, count_unified_diff, friendly_tool_stage
 
 
@@ -19,6 +20,12 @@ def event(timestamp: str, payload_type: str, **payload: object) -> dict[str, obj
 
 
 class CodexTelemetryTests(unittest.TestCase):
+    def test_codex_command_uses_path_when_no_override_is_set(self) -> None:
+        with patch("codex_status_server.CODEX_COMMAND", ""), patch(
+            "codex_status_server.shutil.which", return_value="/opt/codex/bin/codex"
+        ):
+            self.assertEqual(resolve_codex_command(), ["/opt/codex/bin/codex"])
+
     def test_task_details_are_visible_by_default_without_token(self) -> None:
         self.assertTrue(resolve_expose_task_details({}, {}))
         self.assertTrue(resolve_expose_task_details({"access_token": ""}, {}))
