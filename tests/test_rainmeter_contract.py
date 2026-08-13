@@ -98,13 +98,15 @@ class RainmeterContractTests(unittest.TestCase):
                 self.assertIn("X=186", sections[name])
                 self.assertIn("StringAlign=Right", sections[name])
 
-    def test_git_state_uses_quota_accent_color(self) -> None:
+    def test_git_labels_use_quota_accent_color(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         sections = {
             name: body
             for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)
         }
-        self.assertIn("FontColor=#AccentTextColor#", sections["MeterGitState"])
+        for name in ("MeterGitBranch", "MeterGitState"):
+            with self.subTest(section=name):
+                self.assertIn("FontColor=#AccentTextColor#", sections[name])
 
 
 if __name__ == "__main__":
