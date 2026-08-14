@@ -399,6 +399,35 @@ EXPOSE_TASK_DETAILS=0
 
 只要配置了 `STATUS_ACCESS_TOKEN`，所有接口都会拒绝没有正确令牌的请求。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
 
+## 可调运行参数
+
+状态服务会校验数字、布尔值和枚举参数；无效值不会再导致服务在启动阶段崩溃，而是回退到安全默认值并在终端显示原因。
+
+| 参数 | 默认值 | 作用 |
+|---|---:|---|
+| `TASK_STATS_SCOPE` | `task` | “本次”统计范围：`turn` 单轮、`task` 整个任务、`service` 本次服务运行期 |
+| `GIT_STATS_EXCLUDE` | `.DS_Store` | 不计入 Git 项目数的逗号分隔通配模式；同时匹配相对路径和文件名 |
+| `GIT_INCLUDE_MODE_ONLY` | `0` | 是否把仅文件权限变化计入“本次/待同步”项目数 |
+| `GIT_CACHE_SECONDS` | `2` | Git 统计缓存秒数，允许 `0` 到 `60` |
+| `GIT_TIMEOUT_SECONDS` | `2.5` | 每条 Git 查询的超时秒数，允许 `0.1` 到 `30` |
+| `MONITOR_INTERVAL_SECONDS` | `0.25` | Codex 会话日志轮询间隔，允许 `0.05` 到 `60` |
+| `SUCCESS_HOLD_SECONDS` | `45` | 完成绿灯保持时间，允许 `0` 到 `3600` |
+| `RUNNING_STALE_SECONDS` | `300` | 多久没有任务事件后回到空闲，允许 `5` 到 `86400` |
+| `PORT` | `8765` | 状态服务端口，允许 `1` 到 `65535` |
+
+例如，让“本次”只统计当前一轮，同时忽略临时目录和纯权限变化：
+
+```bash
+cd mac/codex_status_server
+TASK_STATS_SCOPE=turn GIT_STATS_EXCLUDE='.DS_Store,tmp/*' GIT_INCLUDE_MODE_ONLY=0 ./start.command
+```
+
+Rainmeter 的网络刷新间隔只在 `@Resources/variables.inc` 中配置：
+
+```ini
+UpdateInterval=1
+```
+
 ## 安全说明
 
 状态服务只提供只读 `/status`、`/health`、`/usage` 和 `/rainmeter` 接口，不提供远程执行命令能力。完整任务遥测不会包含用户提示词全文或完整工作目录；项目只显示目录名。

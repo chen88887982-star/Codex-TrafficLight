@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 
 TERMINAL_STATES = {"success", "error"}
@@ -90,6 +91,7 @@ class SessionTask:
     cached_input_tokens: int = 0
     reasoning_tokens: int = 0
     git_sha: str = ""
+    turn_git_sha: str = ""
     git_branch: str = ""
     git_origin_url: str = ""
     patch_files: set[str] = field(default_factory=set)
@@ -105,12 +107,26 @@ class SessionTask:
 
 
 class CodexTelemetry:
-    def __init__(self, codex_home: Path, *, git_cache_seconds: float = 2.0) -> None:
+    def __init__(
+        self,
+        codex_home: Path,
+        *,
+        git_cache_seconds: float = 2.0,
+        git_timeout_seconds: float = 2.5,
+        task_stats_scope: str = "task",
+        git_exclude_patterns: Iterable[str] = (),
+        include_mode_only: bool = False,
+    ) -> None:
         self.codex_home = codex_home
         self.git_cache_seconds = git_cache_seconds
+        self.git_timeout_seconds = git_timeout_seconds
+        self.task_stats_scope = task_stats_scope if task_stats_scope in {"turn", "task", "service"} else "task"
+        self.git_exclude_patterns = tuple(pattern.strip() for pattern in git_exclude_patterns if pattern.strip())
+        self.include_mode_only = include_mode_only
         self._tasks: dict[Path, SessionTask] = {}
         self._thread_cache: dict[str, dict[str, object]] = {}
         self._git_cache: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
+        self._service_git_baselines: dict[str, str] = {}
         self._lock = threading.RLock()
 
     def task_for(self, path: Path) -> SessionTask:
@@ -202,6 +218,8 @@ class CodexTelemetry:
                 task.patch_added = 0
                 task.patch_deleted = 0
                 self._enrich_thread(task, refresh=True)
+                if self.task_stats_scope == "turn" and not reconstructing:
+                    task.turn_git_sha = self._git_head(task.cwd)
                 return "running"
 
             if event_type == "event_msg" and payload_type in {
@@ -442,6 +460,41 @@ class CodexTelemetry:
                 return dict(zip(keys, row))
         return {}
 
+    def _git_head(self, cwd: str) -> str:
+        if not cwd or not Path(cwd).is_dir():
+            return ""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_timeout_seconds,
+                env={**os.environ, "LC_ALL": "C"},
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def _task_baseline(self, task: SessionTask) -> str:
+        if self.task_stats_scope == "turn":
+            return task.turn_git_sha or task.git_sha or "HEAD"
+        if self.task_stats_scope == "service":
+            baseline = self._service_git_baselines.get(task.cwd)
+            if baseline is None:
+                baseline = self._git_head(task.cwd) or task.git_sha or "HEAD"
+                self._service_git_baselines[task.cwd] = baseline
+            return baseline
+        return task.git_sha or "HEAD"
+
+    def _git_path_excluded(self, relative: str) -> bool:
+        normalized = relative.replace("\\", "/")
+        basename = normalized.rsplit("/", 1)[-1]
+        return any(fnmatch(normalized, pattern) or fnmatch(basename, pattern) for pattern in self.git_exclude_patterns)
+
     def _git_stats(self, task: SessionTask) -> dict[str, object]:
         empty = {
             "git_available": False,
@@ -464,7 +517,8 @@ class CodexTelemetry:
         }
         if not task.cwd or not Path(task.cwd).is_dir():
             return empty
-        key = (task.cwd, task.git_sha)
+        baseline = self._task_baseline(task)
+        key = (task.cwd, baseline)
         cached = self._git_cache.get(key)
         if cached and time.monotonic() - cached[0] < self.git_cache_seconds:
             return cached[1].copy()
@@ -478,7 +532,7 @@ class CodexTelemetry:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=2.5,
+                    timeout=self.git_timeout_seconds,
                     env={**os.environ, "LC_ALL": "C"},
                     check=False,
                 )
@@ -490,13 +544,15 @@ class CodexTelemetry:
         if return_code or not root:
             return empty
         _, branch = git("branch", "--show-current")
-        baseline = task.git_sha or "HEAD"
         _, porcelain = git("status", "--porcelain", "--untracked-files=all")
-        dirty = bool(porcelain)
+        dirty = False
         untracked: dict[str, int] = {}
         for line in porcelain.splitlines():
+            relative = line[3:] if len(line) > 3 else ""
+            if not relative or self._git_path_excluded(relative):
+                continue
+            dirty = True
             if line.startswith("?? "):
-                relative = line[3:]
                 candidate = Path(task.cwd) / relative
                 try:
                     content = (
@@ -515,7 +571,12 @@ class CodexTelemetry:
         def diff_stats(reference: str) -> tuple[bool, set[str], int, int]:
             diff_code, numstat = git("diff", "--numstat", reference, "--")
             name_code, names_text = git("diff", "--name-only", reference, "--")
-            files = {line for line in names_text.splitlines() if line} if name_code == 0 else set()
+            files = (
+                {line for line in names_text.splitlines() if line and not self._git_path_excluded(line)}
+                if name_code == 0
+                else set()
+            )
+            numstat_stats: dict[str, tuple[int | None, int | None]] = {}
             added = 0
             deleted = 0
             if diff_code == 0:
@@ -523,11 +584,31 @@ class CodexTelemetry:
                     parts = line.split("\t", 2)
                     if len(parts) < 3:
                         continue
+                    relative = parts[2]
+                    if self._git_path_excluded(relative):
+                        continue
+                    file_added = int(parts[0]) if parts[0].isdigit() else None
+                    file_deleted = int(parts[1]) if parts[1].isdigit() else None
+                    numstat_stats[relative] = (file_added, file_deleted)
                     if parts[0].isdigit():
-                        added += int(parts[0])
+                        added += file_added or 0
                     if parts[1].isdigit():
-                        deleted += int(parts[1])
-                    files.add(parts[2])
+                        deleted += file_deleted or 0
+                    files.add(relative)
+            summary_code, summary = git("diff", "--summary", reference, "--")
+            if summary_code == 0:
+                for line in summary.splitlines():
+                    match = re.search(r"mode change \d+ => \d+ (.+)$", line)
+                    if not match:
+                        continue
+                    relative = match.group(1)
+                    stats = numstat_stats.get(relative)
+                    if stats not in {None, (0, 0)}:
+                        continue
+                    if self.include_mode_only and not self._git_path_excluded(relative):
+                        files.add(relative)
+                    else:
+                        files.discard(relative)
             for relative, line_count in untracked.items():
                 files.add(relative)
                 added += line_count

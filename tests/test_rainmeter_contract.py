@@ -78,6 +78,12 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("[MeterGitCumulative]", text)
         self.assertIn("SkinHeight=736", VARIABLES.read_text(encoding="utf-16"))
 
+    def test_update_interval_has_one_configuration_source(self) -> None:
+        self.assertNotIn("UpdateInterval=", MAIN_SKIN.read_text(encoding="utf-16"))
+        self.assertNotIn("UpdateInterval=", SETTINGS_SKIN.read_text(encoding="utf-16"))
+        variable_lines = VARIABLES.read_text(encoding="utf-16").splitlines()
+        self.assertEqual([line for line in variable_lines if line.startswith("UpdateInterval=")], ["UpdateInterval=1"])
+
     def test_parallel_project_has_its_own_full_width_row(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}

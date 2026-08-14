@@ -48,27 +48,90 @@ def resolve_expose_task_details(settings: dict[str, object], environ: dict[str, 
     return environ.get("EXPOSE_TASK_DETAILS", default) == "1"
 
 
+def read_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except ValueError:
+        print(f"Invalid {name}={raw!r}; using {default}", file=sys.stderr)
+        return default
+    if not minimum <= value <= maximum:
+        print(f"Out-of-range {name}={value}; using {default} ({minimum}..{maximum})", file=sys.stderr)
+        return default
+    return value
+
+
+def read_env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name)
+    try:
+        value = float(raw) if raw is not None else default
+    except ValueError:
+        print(f"Invalid {name}={raw!r}; using {default:g}", file=sys.stderr)
+        return default
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        print(f"Out-of-range {name}={value}; using {default:g} ({minimum:g}..{maximum:g})", file=sys.stderr)
+        return default
+    return value
+
+
+def read_env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    print(f"Invalid {name}={raw!r}; using {int(default)}", file=sys.stderr)
+    return default
+
+
+def read_env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = os.environ.get(name, default).strip().lower()
+    if value in choices:
+        return value
+    print(f"Invalid {name}={value!r}; using {default}", file=sys.stderr)
+    return default
+
+
+def read_env_patterns(name: str, default: str) -> tuple[str, ...]:
+    return tuple(pattern.strip() for pattern in os.environ.get(name, default).split(",") if pattern.strip())
+
+
 PRIVATE_SETTINGS = load_private_settings()
 STATUS_FILE = BASE_DIR / "status.json"
 USAGE_CACHE_FILE = BASE_DIR / "usage-cache.json"
 LOG_FILE = BASE_DIR / "status-server.log"
 HOST = os.environ.get("HOST", "127.0.0.1")
-PORT = int(os.environ.get("PORT", "8765"))
-AUTO_MONITOR = os.environ.get("AUTO_MONITOR_CODEX", "1") != "0"
+PORT = read_env_int("PORT", 8765, 1, 65535)
+AUTO_MONITOR = read_env_bool("AUTO_MONITOR_CODEX", True)
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
-SUCCESS_HOLD_SECONDS = int(os.environ.get("SUCCESS_HOLD_SECONDS", "45"))
-MONITOR_INTERVAL_SECONDS = float(os.environ.get("MONITOR_INTERVAL_SECONDS", "0.25"))
-RUNNING_STALE_SECONDS = int(os.environ.get("RUNNING_STALE_SECONDS", "300"))
-USAGE_STALE_SECONDS = int(os.environ.get("USAGE_STALE_SECONDS", "900"))
-ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("ACCOUNT_QUERY_TIMEOUT_SECONDS", "45"))
-LOG_MAX_BYTES = int(os.environ.get("LOG_MAX_BYTES", str(5 * 1024 * 1024)))
-LOG_BACKUP_COUNT = int(os.environ.get("LOG_BACKUP_COUNT", "3"))
+SUCCESS_HOLD_SECONDS = read_env_int("SUCCESS_HOLD_SECONDS", 45, 0, 3600)
+MONITOR_INTERVAL_SECONDS = read_env_float("MONITOR_INTERVAL_SECONDS", 0.25, 0.05, 60.0)
+RUNNING_STALE_SECONDS = read_env_int("RUNNING_STALE_SECONDS", 300, 5, 86400)
+USAGE_STALE_SECONDS = read_env_int("USAGE_STALE_SECONDS", 900, 30, 86400)
+ACCOUNT_QUERY_TIMEOUT_SECONDS = read_env_float("ACCOUNT_QUERY_TIMEOUT_SECONDS", 45.0, 1.0, 300.0)
+LOG_MAX_BYTES = read_env_int("LOG_MAX_BYTES", 5 * 1024 * 1024, 1024, 1024 * 1024 * 1024)
+LOG_BACKUP_COUNT = read_env_int("LOG_BACKUP_COUNT", 3, 0, 100)
+GIT_CACHE_SECONDS = read_env_float("GIT_CACHE_SECONDS", 2.0, 0.0, 60.0)
+GIT_TIMEOUT_SECONDS = read_env_float("GIT_TIMEOUT_SECONDS", 2.5, 0.1, 30.0)
+TASK_STATS_SCOPE = read_env_choice("TASK_STATS_SCOPE", "task", {"turn", "task", "service"})
+GIT_STATS_EXCLUDE = read_env_patterns("GIT_STATS_EXCLUDE", ".DS_Store")
+GIT_INCLUDE_MODE_ONLY = read_env_bool("GIT_INCLUDE_MODE_ONLY", False)
 CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "").strip()
 STATUS_ACCESS_TOKEN = os.environ.get("STATUS_ACCESS_TOKEN", str(PRIVATE_SETTINGS.get("access_token") or ""))
-ALLOW_CORS = os.environ.get("ALLOW_CORS", "1" if PRIVATE_SETTINGS.get("allow_cors") else "0") == "1"
+ALLOW_CORS = read_env_bool("ALLOW_CORS", bool(PRIVATE_SETTINGS.get("allow_cors")))
 EXPOSE_TASK_DETAILS = resolve_expose_task_details(PRIVATE_SETTINGS, os.environ)
-TELEMETRY = CodexTelemetry(CODEX_HOME)
+TELEMETRY = CodexTelemetry(
+    CODEX_HOME,
+    git_cache_seconds=GIT_CACHE_SECONDS,
+    git_timeout_seconds=GIT_TIMEOUT_SECONDS,
+    task_stats_scope=TASK_STATS_SCOPE,
+    git_exclude_patterns=GIT_STATS_EXCLUDE,
+    include_mode_only=GIT_INCLUDE_MODE_ONLY,
+)
 
 DEFAULT_STATUS = {
     "status": "idle",

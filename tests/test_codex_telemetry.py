@@ -7,7 +7,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_status_server import extract_credits_label, resolve_codex_command, resolve_expose_task_details
+from codex_status_server import (
+    extract_credits_label,
+    read_env_bool,
+    read_env_choice,
+    read_env_float,
+    read_env_int,
+    resolve_codex_command,
+    resolve_expose_task_details,
+)
 from codex_telemetry import CodexTelemetry, count_unified_diff, friendly_tool_stage
 
 
@@ -20,6 +28,17 @@ def event(timestamp: str, payload_type: str, **payload: object) -> dict[str, obj
 
 
 class CodexTelemetryTests(unittest.TestCase):
+    def test_invalid_environment_parameters_fall_back_to_safe_defaults(self) -> None:
+        with patch.dict(
+            "codex_status_server.os.environ",
+            {"TEST_INT": "0", "TEST_FLOAT": "nan", "TEST_BOOL": "maybe", "TEST_CHOICE": "unknown"},
+            clear=False,
+        ):
+            self.assertEqual(read_env_int("TEST_INT", 10, 1, 20), 10)
+            self.assertEqual(read_env_float("TEST_FLOAT", 2.5, 0.1, 10), 2.5)
+            self.assertTrue(read_env_bool("TEST_BOOL", True))
+            self.assertEqual(read_env_choice("TEST_CHOICE", "task", {"task", "turn"}), "task")
+
     def test_codex_command_uses_path_when_no_override_is_set(self) -> None:
         with (
             patch("codex_status_server.CODEX_COMMAND", ""),
@@ -173,6 +192,94 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
             self.assertEqual(snapshot["git_cumulative_label"], "待同步 0 项  +0  -0")
             self.assertEqual(snapshot["git_state_label"], "云端 已同步")
+
+    def test_git_stats_ignore_excluded_and_mode_only_files_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            source = root / "app.py"
+            source.write_text("print('one')\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=root, check=True)
+            baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            source.chmod(0o755)
+            if not subprocess.check_output(["git", "status", "--short"], cwd=root, text=True).strip():
+                self.skipTest("filesystem does not expose executable-bit changes to Git")
+            (root / ".DS_Store").write_bytes(b"metadata")
+
+            tracker = CodexTelemetry(root, git_cache_seconds=0, git_exclude_patterns=(".DS_Store",))
+            task = tracker.task_for(root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl")
+            task.session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            task.cwd = str(root)
+            task.git_sha = baseline
+            task.status = "running"
+            task.updated_at = 1786669201
+            snapshot = tracker.snapshot()
+            self.assertEqual(snapshot["git_change_label"], "本次 0 项  +0  -0")
+
+            inclusive = CodexTelemetry(
+                root,
+                git_cache_seconds=0,
+                git_exclude_patterns=(".DS_Store",),
+                include_mode_only=True,
+            )
+            inclusive_task = inclusive.task_for(root / "rollout-019ffd18-a03f-7cd2-a003-9521a17e3090.jsonl")
+            inclusive_task.session_id = "019ffd18-a03f-7cd2-a003-9521a17e3090"
+            inclusive_task.cwd = str(root)
+            inclusive_task.git_sha = baseline
+            inclusive_task.status = "running"
+            inclusive_task.updated_at = 1786669201
+            self.assertEqual(inclusive.snapshot()["git_change_label"], "本次 1 项  +0  -0")
+
+    def test_turn_scope_uses_turn_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            source = root / "app.py"
+            source.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "task baseline"], cwd=root, check=True)
+            task_baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            source.write_text("one\ntwo\n", encoding="utf-8")
+            subprocess.run(["git", "commit", "-qam", "turn baseline"], cwd=root, check=True)
+            turn_baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            source.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+            tracker = CodexTelemetry(root, git_cache_seconds=0, task_stats_scope="turn")
+            task = tracker.task_for(root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl")
+            task.session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            task.cwd = str(root)
+            task.git_sha = task_baseline
+            task.turn_git_sha = turn_baseline
+            task.status = "running"
+            task.updated_at = 1786669201
+            self.assertEqual(tracker.snapshot()["git_change_label"], "本次 1 项  +1  -0")
+
+    def test_service_scope_uses_first_observed_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            source = root / "app.py"
+            source.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=root, check=True)
+
+            tracker = CodexTelemetry(root, git_cache_seconds=0, task_stats_scope="service")
+            task = tracker.task_for(root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl")
+            task.session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            task.cwd = str(root)
+            task.status = "running"
+            task.updated_at = 1786669201
+            self.assertEqual(tracker.snapshot()["git_change_label"], "本次 0 项  +0  -0")
+
+            source.write_text("one\ntwo\n", encoding="utf-8")
+            self.assertEqual(tracker.snapshot()["git_change_label"], "本次 1 项  +1  -0")
 
 
 if __name__ == "__main__":
