@@ -6,15 +6,19 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 from codex_status_server import (
+    consider_session_usage_fallback,
     effective_status,
+    format_sync_label,
     query_live_account_usage,
     refresh_usage_cache_once,
     remove_pid_file,
     service_health_snapshot,
+    usage_from_session_rate_limits,
     write_pid_file,
 )
 from service_runtime import JsonlFollower, RotatingTextLog, SingleFlightWorker, TaskRefreshTracker, atomic_write_json
@@ -189,9 +193,62 @@ for line in sys.stdin:
         with (
             patch("codex_status_server.query_live_account_usage", side_effect=TimeoutError("offline")),
             patch("codex_status_server.read_usage_cache", return_value=cached),
+            patch("codex_status_server.latest_session_usage_fallback", return_value=None),
             patch("codex_status_server.write_log"),
         ):
             self.assertIs(refresh_usage_cache_once(), cached)
+
+    def test_failed_live_query_uses_latest_session_fallback(self) -> None:
+        fallback = {"available": True, "primary_remaining_value": 57, "source": "session_event"}
+        with (
+            patch("codex_status_server.query_live_account_usage", side_effect=TimeoutError("offline")),
+            patch("codex_status_server.latest_session_usage_fallback", return_value=fallback),
+            patch("codex_status_server.write_log"),
+        ):
+            self.assertIs(refresh_usage_cache_once(), fallback)
+
+    def test_session_rate_limits_are_labeled_as_log_snapshot(self) -> None:
+        path = Path("/tmp/session.jsonl")
+        event = {
+            "timestamp": datetime.now().astimezone().isoformat(),
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "plan_type": "plus",
+                    "primary": {"used_percent": 43.0, "resets_at": 1893456000},
+                    "secondary": None,
+                },
+            },
+        }
+        usage = usage_from_session_rate_limits(event, path)
+        self.assertIsNotNone(usage)
+        assert usage is not None
+        self.assertEqual(usage["source"], "session_event")
+        self.assertEqual(usage["primary_remaining_value"], 57)
+        self.assertTrue(format_sync_label(usage).startswith("日志快照 "))
+
+    def test_fresh_app_server_usage_is_not_replaced_by_session_event(self) -> None:
+        event = {
+            "timestamp": datetime.now().astimezone().isoformat(),
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {"primary": {"used_percent": 50, "resets_at": 1893456000}},
+            },
+        }
+        current = {
+            "available": True,
+            "source": "app_server",
+            "updated_at": datetime.now().astimezone().isoformat(),
+        }
+        with (
+            patch("codex_status_server.read_usage_cache", return_value=current),
+            patch("codex_status_server.write_usage_cache") as write_cache,
+            patch.dict("codex_status_server.usage_query_health", {"last_error": ""}, clear=False),
+        ):
+            self.assertIsNone(consider_session_usage_fallback(event, Path("/tmp/session.jsonl")))
+        write_cache.assert_not_called()
 
 
 if __name__ == "__main__":

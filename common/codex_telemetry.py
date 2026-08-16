@@ -70,6 +70,13 @@ def friendly_tool_stage(name: object) -> str:
     return "正在使用工具"
 
 
+def compact_task_title(value: object, limit: int = 72) -> str:
+    title = " ".join(str(value or "").split())
+    if not title:
+        return ""
+    return title if len(title) <= limit else f"{title[: limit - 1].rstrip()}…"
+
+
 @dataclass
 class SessionTask:
     path: Path
@@ -77,6 +84,8 @@ class SessionTask:
     turn_id: str = ""
     cwd: str = ""
     title: str = ""
+    turn_title: str = ""
+    pending_turn_title: str = ""
     status: str = "idle"
     stage: str = "Codex 空闲"
     started_at: float = 0.0
@@ -210,8 +219,20 @@ class CodexTelemetry:
                 task.updated_at = max(task.updated_at, event_at)
                 return ""
 
+            if event_type == "event_msg" and payload_type == "user_message":
+                title = compact_task_title(payload.get("message"))
+                if title:
+                    if task.status in ACTIVE_STATES:
+                        task.turn_title = title
+                    else:
+                        task.pending_turn_title = title
+                task.updated_at = max(task.updated_at, event_at)
+                return ""
+
             if event_type == "event_msg" and payload_type == "task_started":
                 task.turn_id = str(payload.get("turn_id") or "")
+                task.turn_title = task.pending_turn_title
+                task.pending_turn_title = ""
                 task.status = "running"
                 task.stage = "正在处理任务"
                 task.started_at = parse_timestamp(payload.get("started_at")) or event_at
@@ -271,15 +292,19 @@ class CodexTelemetry:
                 self._set_active(task, "running", "正在生成回复", event_at)
                 return "running"
 
-            if event_type == "response_item" and payload_type == "function_call":
-                arguments = str(payload.get("arguments", ""))
+            if event_type == "event_msg" and payload_type == "agent_reasoning":
+                self._set_active(task, "running", "正在分析任务", event_at)
+                return "running"
+
+            if event_type == "response_item" and payload_type in {"function_call", "custom_tool_call"}:
+                arguments = str(payload.get("arguments") or payload.get("input") or "")
                 if "require_escalated" in arguments:
                     self._set_active(task, "waiting", "等待用户确认", event_at)
                     return "waiting"
                 self._set_active(task, "running", friendly_tool_stage(payload.get("name")), event_at)
                 return "running"
 
-            if event_type == "response_item" and payload_type == "function_call_output":
+            if event_type == "response_item" and payload_type in {"function_call_output", "custom_tool_call_output"}:
                 self._set_active(task, "running", "正在处理工具结果", event_at)
                 self.invalidate_git(task.cwd)
                 return "running"
@@ -305,6 +330,8 @@ class CodexTelemetry:
                 return self._empty_snapshot()
             other_active = [item for item in active if item is not task]
             other_active.sort(key=lambda item: item.updated_at, reverse=True)
+            active_tasks = [self._task_summary(item) for item in active]
+            other_active_projects = [item.project for item in other_active]
             self._enrich_thread(task)
             baseline = self._task_baseline(task)
             task_snapshot = replace(task, patch_files=set(task.patch_files))
@@ -323,10 +350,12 @@ class CodexTelemetry:
                 "status": task.status,
                 "stage": task.stage,
                 "project": task.project,
-                "task_title": task.title or task.project,
+                "task_title": task.turn_title or task.title or task.project,
                 "active_count": len(active),
                 "other_active_count": max(0, len(active) - 1),
                 "other_active_project": other_active[0].project if other_active else "",
+                "other_active_projects": other_active_projects,
+                "active_tasks": active_tasks,
                 "elapsed_seconds": elapsed,
                 "model": task.model,
                 "reasoning_effort": task.reasoning_effort,
@@ -358,6 +387,8 @@ class CodexTelemetry:
             "active_count": snapshot["active_count"],
             "other_active_count": snapshot["other_active_count"],
             "other_active_project": "",
+            "other_active_projects": [],
+            "active_tasks": [],
             "elapsed_seconds": snapshot["elapsed_seconds"],
             "updated_at": snapshot["updated_at"],
             "event_age_seconds": snapshot["event_age_seconds"],
@@ -442,6 +473,19 @@ class CodexTelemetry:
         task.status = status
         task.stage = stage
         task.updated_at = max(task.updated_at, event_at)
+
+    @staticmethod
+    def _task_summary(task: SessionTask) -> dict[str, object]:
+        elapsed = max(0, int(time.time() - task.started_at)) if task.started_at else 0
+        return {
+            "session_id": task.session_id,
+            "turn_id": task.turn_id,
+            "project": task.project,
+            "task_title": task.turn_title or task.title or task.project,
+            "status": task.status,
+            "stage": task.stage,
+            "elapsed_seconds": elapsed,
+        }
 
     def _finish_task(
         self, task: SessionTask, payload: dict[str, object], event_at: float, status: str, stage: str
@@ -602,8 +646,8 @@ class CodexTelemetry:
             "git_task_label": "本次 --",
             "git_change_label": "本次 --",
             "git_state_label": "",
-            "git_sync_label": "待同步 --",
-            "git_cumulative_label": "待同步 --",
+            "git_sync_label": "待推送 --",
+            "git_cumulative_label": "待推送 --",
         }
         return empty
 
@@ -626,7 +670,7 @@ class CodexTelemetry:
                 if cached and time.monotonic() - cached[0] < self.git_cache_seconds:
                     return cached[1].copy()
 
-        def git(*args: str) -> tuple[int, str]:
+        def git(*args: str, strip: bool = True) -> tuple[int, str]:
             try:
                 result = subprocess.run(
                     ["git", "-c", "core.quotepath=false", *args],
@@ -641,21 +685,30 @@ class CodexTelemetry:
                 )
             except (OSError, subprocess.TimeoutExpired):
                 return 1, ""
-            return result.returncode, result.stdout.strip()
+            return result.returncode, result.stdout.strip() if strip else result.stdout
 
         return_code, root = git("rev-parse", "--show-toplevel")
         if return_code or not root:
             return empty
         _, branch = git("branch", "--show-current")
-        _, porcelain = git("status", "--porcelain", "--untracked-files=all")
+        _, porcelain = git("status", "--porcelain=v1", "-z", "--untracked-files=all", strip=False)
         dirty = False
         untracked: dict[str, int] = {}
-        for line in porcelain.splitlines():
+        records = porcelain.split("\0")
+        index = 0
+        while index < len(records):
+            line = records[index]
+            index += 1
+            if not line:
+                continue
+            status_code = line[:2]
             relative = line[3:] if len(line) > 3 else ""
+            if any(marker in status_code for marker in ("R", "C")) and index < len(records):
+                index += 1
             if not relative or self._git_path_excluded(relative):
                 continue
             dirty = True
-            if line.startswith("?? "):
+            if status_code == "??":
                 candidate = Path(task.cwd) / relative
                 try:
                     content = (
@@ -672,10 +725,10 @@ class CodexTelemetry:
                 )
 
         def diff_stats(reference: str) -> tuple[bool, set[str], int, int]:
-            diff_code, numstat = git("diff", "--numstat", reference, "--")
-            name_code, names_text = git("diff", "--name-only", reference, "--")
+            diff_code, numstat = git("diff", "--numstat", "-z", reference, "--", strip=False)
+            name_code, names_text = git("diff", "--name-only", "-z", reference, "--", strip=False)
             files = (
-                {line for line in names_text.splitlines() if line and not self._git_path_excluded(line)}
+                {line for line in names_text.split("\0") if line and not self._git_path_excluded(line)}
                 if name_code == 0
                 else set()
             )
@@ -683,11 +736,21 @@ class CodexTelemetry:
             added = 0
             deleted = 0
             if diff_code == 0:
-                for line in numstat.splitlines():
+                records = numstat.split("\0")
+                index = 0
+                while index < len(records):
+                    line = records[index]
+                    index += 1
+                    if not line:
+                        continue
                     parts = line.split("\t", 2)
                     if len(parts) < 3:
                         continue
                     relative = parts[2]
+                    if not relative and index + 1 < len(records):
+                        index += 1
+                        relative = records[index]
+                        index += 1
                     if self._git_path_excluded(relative):
                         continue
                     file_added = int(parts[0]) if parts[0].isdigit() else None
@@ -738,24 +801,24 @@ class CodexTelemetry:
             change_label = "本次 0 项  +0  -0"
 
         if ahead and behind:
-            state_label = f"云端 分叉 +{ahead}/-{behind}"
+            state_label = f"跟踪 分叉 +{ahead}/-{behind}"
         elif ahead:
-            state_label = f"云端 领先 {ahead}"
+            state_label = f"跟踪 领先 {ahead}"
         elif behind:
-            state_label = f"云端 落后 {behind}"
+            state_label = f"跟踪 落后 {behind}"
         elif upstream_code == 0:
-            state_label = "云端 已同步"
+            state_label = "跟踪 已同步"
         else:
-            state_label = "云端 未跟踪"
+            state_label = "跟踪 未配置"
 
         if upstream_code == 0:
             _, sync_files, sync_added, sync_deleted = diff_stats("@{upstream}")
-            cumulative_label = f"待同步 {len(sync_files)} 项  +{sync_added}  -{sync_deleted}"
+            cumulative_label = f"待推送 {len(sync_files)} 项  +{sync_added}  -{sync_deleted}"
         else:
             sync_files = set()
             sync_added = 0
             sync_deleted = 0
-            cumulative_label = "待同步 --"
+            cumulative_label = "待推送 --"
         result = {
             "git_available": True,
             "git_branch": branch or task.git_branch or "--",
@@ -802,6 +865,8 @@ class CodexTelemetry:
             "active_count": 0,
             "other_active_count": 0,
             "other_active_project": "",
+            "other_active_projects": [],
+            "active_tasks": [],
             "elapsed_seconds": 0,
             "model": "",
             "reasoning_effort": "",
@@ -827,6 +892,6 @@ class CodexTelemetry:
             "git_task_label": "本次 0 项  +0  -0",
             "git_change_label": "本次 0 项  +0  -0",
             "git_state_label": "",
-            "git_sync_label": "待同步 --",
-            "git_cumulative_label": "待同步 --",
+            "git_sync_label": "待推送 --",
+            "git_cumulative_label": "待推送 --",
         }

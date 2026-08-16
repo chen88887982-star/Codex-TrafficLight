@@ -18,7 +18,7 @@ from codex_status_server import (
     resolve_codex_command,
     resolve_expose_task_details,
 )
-from codex_telemetry import CodexTelemetry, count_unified_diff, friendly_tool_stage
+from codex_telemetry import CodexTelemetry, compact_task_title, count_unified_diff, friendly_tool_stage
 
 
 def event(timestamp: str, payload_type: str, **payload: object) -> dict[str, object]:
@@ -61,6 +61,60 @@ class CodexTelemetryTests(unittest.TestCase):
         self.assertEqual(friendly_tool_stage("functions.exec_command"), "正在运行命令")
         self.assertEqual(friendly_tool_stage("apply_patch"), "正在修改代码")
         self.assertEqual(friendly_tool_stage("web__run"), "正在查询资料")
+        self.assertEqual(compact_task_title("  第一行\n 第二行  "), "第一行 第二行")
+
+    def test_current_custom_tool_events_and_turn_title_are_tracked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracker = CodexTelemetry(root)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            tracker.ingest(
+                {
+                    "timestamp": "2026-08-14T01:00:00Z",
+                    "type": "session_meta",
+                    "payload": {"id": "019ffd23-fd68-7952-afc5-78495e834d2e", "cwd": str(root / "project")},
+                },
+                path,
+            )
+            tracker.ingest(event("2026-08-14T01:00:01Z", "user_message", message="优化当前轮任务标题"), path)
+            tracker.ingest(event("2026-08-14T01:00:02Z", "task_started", turn_id="turn"), path)
+            result = tracker.ingest(
+                {
+                    "timestamp": "2026-08-14T01:00:03Z",
+                    "type": "response_item",
+                    "payload": {"type": "custom_tool_call", "name": "exec", "input": "git status"},
+                },
+                path,
+            )
+            self.assertEqual(result, "running")
+            self.assertEqual(tracker.snapshot()["stage"], "正在运行命令")
+            self.assertEqual(tracker.snapshot()["task_title"], "优化当前轮任务标题")
+
+            result = tracker.ingest(
+                {
+                    "timestamp": "2026-08-14T01:00:04Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "input": '{"sandbox_permissions":"require_escalated"}',
+                    },
+                },
+                path,
+            )
+            self.assertEqual(result, "waiting")
+            self.assertEqual(tracker.snapshot()["stage"], "等待用户确认")
+            tracker.ingest(
+                {
+                    "timestamp": "2026-08-14T01:00:05Z",
+                    "type": "response_item",
+                    "payload": {"type": "custom_tool_call_output", "output": "done"},
+                },
+                path,
+            )
+            self.assertEqual(tracker.snapshot()["stage"], "正在处理工具结果")
+            tracker.ingest(event("2026-08-14T01:00:06Z", "agent_reasoning", text="thinking"), path)
+            self.assertEqual(tracker.snapshot()["stage"], "正在分析任务")
 
     def test_optional_credits_schema_is_conservative(self) -> None:
         self.assertEqual(extract_credits_label({"usage": {"credits": {"balance": 12.5}}}), "12.5")
@@ -99,6 +153,8 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["other_active_count"], 1)
             self.assertEqual(snapshot["project"], "two")
             self.assertEqual(snapshot["other_active_project"], "one")
+            self.assertEqual(snapshot["other_active_projects"], ["one"])
+            self.assertEqual([item["project"] for item in snapshot["active_tasks"]], ["two", "one"])
 
             tracker.ingest(event("2026-08-14T01:00:05Z", "task_complete", turn_id="turn-two", duration_ms=2000), second)
             snapshot = tracker.snapshot()
@@ -144,6 +200,7 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["project"], "Codex")
             self.assertNotIn("secret-project", json.dumps(snapshot))
             self.assertEqual(snapshot["session_id"], "")
+            self.assertEqual(snapshot["active_tasks"], [])
 
     def test_git_stats_compare_against_task_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -176,24 +233,54 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["git_deleted"], 0)
             self.assertTrue(snapshot["git_dirty"])
             self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
-            self.assertEqual(snapshot["git_cumulative_label"], "待同步 1 项  +1  -0")
+            self.assertEqual(snapshot["git_cumulative_label"], "待推送 1 项  +1  -0")
             self.assertEqual(snapshot["git_task_label"], "本次 1 项  +1  -0")
-            self.assertEqual(snapshot["git_sync_label"], "待同步 1 项  +1  -0")
+            self.assertEqual(snapshot["git_sync_label"], "待推送 1 项  +1  -0")
             self.assertEqual(snapshot["git_sync_files"], 1)
 
             subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "task change"], cwd=root, check=True)
             snapshot = tracker.snapshot()
             self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
-            self.assertEqual(snapshot["git_cumulative_label"], "待同步 1 项  +1  -0")
-            self.assertEqual(snapshot["git_state_label"], "云端 领先 1")
+            self.assertEqual(snapshot["git_cumulative_label"], "待推送 1 项  +1  -0")
+            self.assertEqual(snapshot["git_state_label"], "跟踪 领先 1")
 
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
             subprocess.run(["git", "update-ref", "refs/remotes/origin/main", head], cwd=root, check=True)
             snapshot = tracker.snapshot()
             self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
-            self.assertEqual(snapshot["git_cumulative_label"], "待同步 0 项  +0  -0")
-            self.assertEqual(snapshot["git_state_label"], "云端 已同步")
+            self.assertEqual(snapshot["git_cumulative_label"], "待推送 0 项  +0  -0")
+            self.assertEqual(snapshot["git_state_label"], "跟踪 已同步")
+
+    def test_git_stats_support_spaces_tabs_unicode_and_renames(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            old_path = root / "旧 文件.txt"
+            unicode_path = root / "中文 文件.txt"
+            old_path.write_text("old\n", encoding="utf-8")
+            unicode_path.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--", old_path.name, unicode_path.name], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=root, check=True)
+            baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            subprocess.run(["git", "mv", "--", old_path.name, "新 名称.txt"], cwd=root, check=True)
+            unicode_path.write_text("one\ntwo\n", encoding="utf-8")
+            (root / "制表\t文件.txt").write_text("a\nb\n", encoding="utf-8")
+
+            tracker = CodexTelemetry(root, git_cache_seconds=0)
+            task = tracker.task_for(root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl")
+            task.session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            task.cwd = str(root)
+            task.git_sha = baseline
+            task.status = "running"
+            task.updated_at = time.time()
+            snapshot = tracker.snapshot()
+            self.assertTrue(snapshot["git_dirty"])
+            self.assertEqual(snapshot["git_files"], 3)
+            self.assertEqual(snapshot["git_added"], 3)
+            self.assertEqual(snapshot["git_deleted"], 0)
 
     def test_git_stats_ignore_excluded_and_mode_only_files_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

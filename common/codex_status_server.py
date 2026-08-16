@@ -507,6 +507,10 @@ def format_sync_label(usage: dict[str, object]) -> str:
     updated = datetime.fromtimestamp(timestamp).astimezone()
     label_time = updated.strftime("%H:%M")
     age_seconds = time.time() - timestamp
+    if usage.get("source") == "session_event":
+        if age_seconds > USAGE_STALE_SECONDS:
+            return f"日志快照滞后 {format_age_label(age_seconds)}"
+        return f"日志快照 {label_time}"
     if age_seconds > USAGE_STALE_SECONDS:
         return f"可能滞后 {format_age_label(age_seconds)}"
     return f"更新 {label_time}"
@@ -518,7 +522,7 @@ def read_usage_cache() -> dict[str, object]:
             data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return DEFAULT_USAGE.copy()
-        if data.get("source") != "app_server":
+        if data.get("source") not in {"app_server", "session_event"}:
             return DEFAULT_USAGE.copy()
         usage = DEFAULT_USAGE.copy()
         usage.update(data)
@@ -545,6 +549,99 @@ def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
         return usage
 
 
+def usage_from_session_rate_limits(event: dict[str, object], path: Path) -> dict[str, object] | None:
+    payload = event.get("payload", {})
+    if event.get("type") != "event_msg" or not isinstance(payload, dict) or payload.get("type") != "token_count":
+        return None
+    rate_limits = payload.get("rate_limits")
+    if not isinstance(rate_limits, dict):
+        return None
+    primary = rate_limits.get("primary")
+    if not isinstance(primary, dict):
+        return None
+    primary_remaining = remaining_value(primary.get("used_percent"))
+    if primary_remaining is None:
+        return None
+    secondary = rate_limits.get("secondary")
+    secondary = secondary if isinstance(secondary, dict) else {}
+    secondary_remaining = remaining_value(secondary.get("used_percent")) if secondary else None
+    timestamp = parse_timestamp(event.get("timestamp")) or time.time()
+    credits = rate_limits.get("credits")
+    credits_label = (
+        extract_credits_label(credits) if isinstance(credits, dict) and credits.get("has_credits") is True else ""
+    )
+    return {
+        **DEFAULT_USAGE,
+        "available": True,
+        "plan_type": str(rate_limits.get("plan_type") or ""),
+        "primary_remaining_percent": f"{primary_remaining}%",
+        "primary_remaining_value": primary_remaining,
+        "primary_used_percent": used_percent_value(primary.get("used_percent")),
+        "primary_resets_at": format_reset_label(primary.get("resets_at")),
+        "primary_resets_at_epoch": epoch_value(primary.get("resets_at")),
+        "secondary_remaining_percent": f"{secondary_remaining}%" if secondary_remaining is not None else "",
+        "secondary_remaining_value": secondary_remaining,
+        "secondary_used_percent": used_percent_value(secondary.get("used_percent")),
+        "secondary_resets_at": format_reset_label(secondary.get("resets_at")) if secondary else "",
+        "secondary_resets_at_epoch": epoch_value(secondary.get("resets_at")),
+        "updated_at": datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds"),
+        "source_session": str(path),
+        "source": "session_event",
+        "credits_available": bool(credits_label),
+        "credits_label": credits_label,
+    }
+
+
+def consider_session_usage_fallback(event: dict[str, object], path: Path) -> dict[str, object] | None:
+    fallback = usage_from_session_rate_limits(event, path)
+    if fallback is None:
+        return None
+    current = read_usage_cache()
+    current_timestamp = parse_timestamp(current.get("updated_at"))
+    fallback_timestamp = parse_timestamp(fallback.get("updated_at"))
+    with health_lock:
+        query_failed = bool(usage_query_health.get("last_error"))
+    current_is_fresh_app_server = (
+        current.get("available")
+        and current.get("source") == "app_server"
+        and current_timestamp
+        and time.time() - current_timestamp <= USAGE_STALE_SECONDS
+        and not query_failed
+    )
+    if current_is_fresh_app_server:
+        return None
+    if current.get("available") and current_timestamp >= fallback_timestamp:
+        return None
+    return write_usage_cache(fallback)
+
+
+def latest_session_usage_fallback() -> dict[str, object] | None:
+    latest: tuple[float, dict[str, object], Path] | None = None
+    for path in iter_recent_session_files():
+        try:
+            with path.open("rb") as handle:
+                size = path.stat().st_size
+                handle.seek(max(0, size - 2 * 1024 * 1024))
+                lines = handle.read().decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            usage = usage_from_session_rate_limits(event, path)
+            if usage is None:
+                continue
+            timestamp = parse_timestamp(usage.get("updated_at"))
+            if latest is None or timestamp > latest[0]:
+                latest = (timestamp, event, path)
+            break
+    return consider_session_usage_fallback(latest[1], latest[2]) if latest else None
+
+
 def rainmeter_value(value: object) -> str:
     if value is None:
         return "-1"
@@ -555,7 +652,15 @@ def build_rainmeter_payload(
     status_data: dict[str, object], usage_data: dict[str, object], task_data: dict[str, object]
 ) -> str:
     status_codes = {"idle": "0", "running": "1", "waiting": "2", "success": "3", "error": "4"}
-    active_label = str(task_data.get("other_active_project") or "")
+    other_projects = task_data.get("other_active_projects")
+    if isinstance(other_projects, list) and other_projects:
+        names = [str(value) for value in other_projects[:2] if value]
+        remaining_count = max(0, int(task_data.get("other_active_count") or 0) - len(names))
+        active_label = f"并行 {' · '.join(names)}"
+        if remaining_count:
+            active_label += f" +{remaining_count}"
+    else:
+        active_label = str(task_data.get("other_active_project") or "")
     model_label = " ".join(
         value for value in (str(task_data.get("model") or ""), str(task_data.get("reasoning_effort") or "")) if value
     )
@@ -592,7 +697,7 @@ def build_rainmeter_payload(
         credits_label=clean_field(usage_data.get("credits_label") or ""),
         model_label=clean_field(model_label),
         git_cumulative=clean_field(
-            task_data.get("git_sync_label") or task_data.get("git_cumulative_label") or "待同步 --"
+            task_data.get("git_sync_label") or task_data.get("git_cumulative_label") or "待推送 --"
         ),
     )
 
@@ -741,7 +846,7 @@ def refresh_usage_cache_once() -> dict[str, object]:
         write_log(f"Codex live account usage query failed: {exc}")
         with health_lock:
             usage_query_health.update({"last_error": f"{type(exc).__name__}: {exc}", "last_error_at": time.time()})
-        return read_usage_cache()
+        return latest_session_usage_fallback() or read_usage_cache()
     with health_lock:
         usage_query_health.update({"last_success_at": time.time(), "last_error": "", "last_error_at": 0.0})
     return usage
@@ -879,6 +984,9 @@ def codex_status_monitor() -> None:
                         TELEMETRY.mark_ignored(path)
                         write_log(f"Ignored approval review session: {path}")
                         break
+                    fallback_usage = consider_session_usage_fallback(event, path)
+                    if fallback_usage:
+                        update_task_usage_snapshot(fallback_usage)
                     applied_status = TELEMETRY.ingest(event, path)
                     task = TELEMETRY.task_for(path)
                     task_key = (str(path), task.turn_id or task.session_id)

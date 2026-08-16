@@ -53,10 +53,11 @@ class RainmeterContractTests(unittest.TestCase):
             "task_title": "task",
             "other_active_count": 2,
             "other_active_project": "another-project",
+            "other_active_projects": ["another-project", "third-project"],
             "git_branch": "main",
             "git_change_label": "本次 2 项 +10 -2",
             "git_state_label": "dirty",
-            "git_cumulative_label": "待同步 1 项 +4 -0",
+            "git_cumulative_label": "待推送 1 项 +4 -0",
             "token_label": "10K tokens",
             "context_label": "context 50%",
             "health_label": "healthy",
@@ -66,9 +67,9 @@ class RainmeterContractTests(unittest.TestCase):
         payload = build_rainmeter_payload(status, usage, task)
         fields = payload.split("|")
         self.assertEqual(len(fields), 26)
-        self.assertIn("project|task|another-project|main", payload)
+        self.assertIn("project|task|并行 another-project · third-project|main", payload)
         self.assertEqual(fields[17], "本次 2 项 +10 -2")
-        self.assertEqual(fields[25], "待同步 1 项 +4 -0")
+        self.assertEqual(fields[25], "待推送 1 项 +4 -0")
         self.assertEqual(fields[11:13], ["-1%", "-2%"])
 
     def test_help_uses_lan_launchers_only_for_remote_computers(self) -> None:
