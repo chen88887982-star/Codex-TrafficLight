@@ -11,5 +11,6 @@ status-auth.json
 *.log.*
 status-server.log
 *.tmp
+**/status-server.pid
 Thumbs.db
 desktop.ini

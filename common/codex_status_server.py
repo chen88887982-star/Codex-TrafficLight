@@ -103,6 +103,7 @@ PRIVATE_SETTINGS = load_private_settings()
 STATUS_FILE = BASE_DIR / "status.json"
 USAGE_CACHE_FILE = BASE_DIR / "usage-cache.json"
 LOG_FILE = BASE_DIR / "status-server.log"
+PID_FILE = BASE_DIR / "status-server.pid"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = read_env_int("PORT", 8765, 1, 65535)
 AUTO_MONITOR = read_env_bool("AUTO_MONITOR_CODEX", True)
@@ -110,6 +111,7 @@ CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 SUCCESS_HOLD_SECONDS = read_env_int("SUCCESS_HOLD_SECONDS", 45, 0, 3600)
 MONITOR_INTERVAL_SECONDS = read_env_float("MONITOR_INTERVAL_SECONDS", 0.25, 0.05, 60.0)
+SESSION_DISCOVERY_INTERVAL_SECONDS = read_env_float("SESSION_DISCOVERY_INTERVAL_SECONDS", 3.0, 0.5, 300.0)
 RUNNING_STALE_SECONDS = read_env_int("RUNNING_STALE_SECONDS", 300, 5, 86400)
 USAGE_STALE_SECONDS = read_env_int("USAGE_STALE_SECONDS", 900, 30, 86400)
 ACCOUNT_QUERY_TIMEOUT_SECONDS = read_env_float("ACCOUNT_QUERY_TIMEOUT_SECONDS", 45.0, 1.0, 300.0)
@@ -131,6 +133,7 @@ TELEMETRY = CodexTelemetry(
     task_stats_scope=TASK_STATS_SCOPE,
     git_exclude_patterns=GIT_STATS_EXCLUDE,
     include_mode_only=GIT_INCLUDE_MODE_ONLY,
+    background_git_statistics=True,
 )
 
 DEFAULT_STATUS = {
@@ -173,7 +176,21 @@ DEFAULT_USAGE = {
 
 status_lock = threading.RLock()
 usage_lock = threading.RLock()
+health_lock = threading.RLock()
 service_log = RotatingTextLog(LOG_FILE, max_bytes=LOG_MAX_BYTES, backups=LOG_BACKUP_COUNT)
+monitor_health: dict[str, object] = {
+    "initialized": False,
+    "heartbeat_at": 0.0,
+    "last_scan_at": 0.0,
+    "last_error": "",
+    "last_error_at": 0.0,
+    "tracked_files": 0,
+}
+usage_query_health: dict[str, object] = {
+    "last_success_at": 0.0,
+    "last_error": "",
+    "last_error_at": 0.0,
+}
 
 
 def write_log(message: str) -> None:
@@ -183,6 +200,87 @@ def write_log(message: str) -> None:
         service_log.write(line)
     except OSError as exc:
         print(f"status-server.log write failed: {exc}", flush=True)
+
+
+def update_monitor_health(**changes: object) -> None:
+    with health_lock:
+        monitor_health.update(changes)
+
+
+def effective_status(status_data: dict[str, object], task_data: dict[str, object]) -> dict[str, object]:
+    """Keep the HTTP status code and displayed task stage on one authoritative snapshot."""
+
+    with health_lock:
+        monitor_initialized = bool(monitor_health["initialized"])
+    if not AUTO_MONITOR or not monitor_initialized:
+        return status_data
+
+    task_status = str(task_data.get("status") or "idle")
+    if task_status not in {"idle", "running", "waiting", "success", "error"}:
+        task_status = "error"
+    result = status_data.copy()
+    result["status"] = task_status
+    result["message"] = str(task_data.get("stage") or "Codex 空闲")
+    if task_data.get("updated_at"):
+        result["updated_at"] = task_data["updated_at"]
+    return result
+
+
+def service_health_snapshot(usage: dict[str, object] | None = None) -> dict[str, object]:
+    now = time.time()
+    usage = usage or read_usage_cache()
+    with health_lock:
+        monitor = monitor_health.copy()
+        account = usage_query_health.copy()
+    telemetry = TELEMETRY.runtime_health()
+    worker = usage_refresh_worker.snapshot()
+    reasons: list[str] = []
+    level = "ok"
+
+    heartbeat_age = now - float(monitor.get("heartbeat_at") or 0)
+    if AUTO_MONITOR:
+        if not monitor.get("initialized"):
+            level = "degraded"
+            reasons.append("监控正在初始化")
+        elif heartbeat_age > max(5.0, SESSION_DISCOVERY_INTERVAL_SECONDS * 2, MONITOR_INTERVAL_SECONDS * 10):
+            level = "error"
+            reasons.append("会话监控心跳超时")
+        if not CODEX_SESSIONS_DIR.exists():
+            level = "error"
+            reasons.append("Codex 会话目录不存在")
+        if monitor.get("last_error") and now - float(monitor.get("last_error_at") or 0) < 300:
+            if level == "ok":
+                level = "degraded"
+            reasons.append("会话监控最近发生异常")
+
+    if worker.get("last_error") or account.get("last_error"):
+        if level == "ok":
+            level = "degraded"
+        reasons.append("额度查询最近失败")
+    usage_timestamp = parse_timestamp(usage.get("updated_at"))
+    if usage.get("available") and usage_timestamp and now - usage_timestamp > USAGE_STALE_SECONDS:
+        if level == "ok":
+            level = "degraded"
+        reasons.append("额度缓存已滞后")
+    if telemetry.get("git_last_error"):
+        if level == "ok":
+            level = "degraded"
+        reasons.append("Git 统计最近失败")
+
+    label = "服务正常" if level == "ok" else f"服务{'异常' if level == 'error' else '降级'} · {reasons[0]}"
+    return {
+        "status": level,
+        "label": label,
+        "reasons": reasons,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "monitor": {
+            **monitor,
+            "heartbeat_age_seconds": max(0, int(heartbeat_age)) if monitor.get("heartbeat_at") else None,
+        },
+        "usage_worker": worker,
+        "usage_query": account,
+        "telemetry": telemetry,
+    }
 
 
 def is_approval_review_event(event: dict[str, object]) -> bool:
@@ -477,8 +575,8 @@ def build_rainmeter_payload(
         primary_value=clean_field(rainmeter_value(usage_data.get("primary_remaining_value"))),
         secondary_value=clean_field(rainmeter_value(usage_data.get("secondary_remaining_value"))),
         sync_label=clean_field(usage_data.get("sync_label") or ""),
-        task_usage_primary="",
-        task_usage_secondary="",
+        task_usage_primary=clean_field(status_data.get("task_usage_primary_label") or ""),
+        task_usage_secondary=clean_field(status_data.get("task_usage_secondary_label") or ""),
         project=clean_field(task_data.get("project") or "等待任务"),
         task_title=clean_field(task_data.get("task_title") or "暂无活动任务"),
         active_label=clean_field(active_label),
@@ -638,10 +736,15 @@ def query_live_account_usage() -> dict[str, object]:
 
 def refresh_usage_cache_once() -> dict[str, object]:
     try:
-        return write_usage_cache(query_live_account_usage())
+        usage = write_usage_cache(query_live_account_usage())
     except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
         write_log(f"Codex live account usage query failed: {exc}")
+        with health_lock:
+            usage_query_health.update({"last_error": f"{type(exc).__name__}: {exc}", "last_error_at": time.time()})
         return read_usage_cache()
+    with health_lock:
+        usage_query_health.update({"last_success_at": time.time(), "last_error": "", "last_error_at": 0.0})
+    return usage
 
 
 def format_usage_delta(delta: float | None) -> str:
@@ -718,12 +821,23 @@ def codex_status_monitor() -> None:
     last_success_at = 0.0
     refresh_tracker = TaskRefreshTracker()
     initialized = False
+    files: list[Path] = []
+    next_discovery_at = 0.0
 
     while True:
+        update_monitor_health(heartbeat_at=time.time())
         try:
-            files = iter_recent_session_files()
+            monotonic_now = time.monotonic()
+            if monotonic_now >= next_discovery_at:
+                recent = iter_recent_session_files()
+                retained_active = [path for path in TELEMETRY.active_paths() if path.exists()]
+                files = list(dict.fromkeys([*recent, *retained_active]))
+                next_discovery_at = monotonic_now + SESSION_DISCOVERY_INTERVAL_SECONDS
+                update_monitor_health(last_scan_at=time.time(), tracked_files=len(files))
             if not files:
-                time.sleep(1)
+                update_monitor_health(initialized=True, tracked_files=0)
+                initialized = True
+                time.sleep(min(1.0, SESSION_DISCOVERY_INTERVAL_SECONDS))
                 continue
 
             if not initialized:
@@ -744,6 +858,7 @@ def codex_status_monitor() -> None:
                     write_status("idle", "Codex 空闲")
                 usage_refresh_worker.request()
                 initialized = True
+                update_monitor_health(initialized=True)
                 time.sleep(MONITOR_INTERVAL_SECONDS)
                 continue
 
@@ -790,7 +905,10 @@ def codex_status_monitor() -> None:
             follower.prune(watched_paths)
             ignored_paths.intersection_update(watched_paths)
             refresh_tracker.prune(watched_paths)
+            TELEMETRY.prune(watched_paths)
+            update_monitor_health(tracked_files=follower.tracked_count)
             if current.get("status") == "success" and last_success_at and now - last_success_at > SUCCESS_HOLD_SECONDS:
+                TELEMETRY.expire_completed(SUCCESS_HOLD_SECONDS)
                 write_status("idle", "Codex 空闲")
                 last_success_at = 0.0
             elif TELEMETRY.expire_stale(RUNNING_STALE_SECONDS):
@@ -798,6 +916,7 @@ def codex_status_monitor() -> None:
 
         except Exception as exc:
             write_log(f"Codex auto monitor error: {exc}")
+            update_monitor_health(last_error=f"{type(exc).__name__}: {exc}", last_error_at=time.time())
 
         time.sleep(MONITOR_INTERVAL_SECONDS)
 
@@ -838,6 +957,9 @@ class StatusHandler(BaseHTTPRequestHandler):
             status_data = read_status()
             usage_data = read_usage_cache()
             task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+            health = service_health_snapshot(usage_data)
+            task_data["health_label"] = health["label"]
+            status_data = effective_status(status_data, task_data)
             text = build_rainmeter_payload(status_data, usage_data, task_data)
             body = text.encode("utf-8")
             self.send_body(200, body, "text/plain; charset=utf-8")
@@ -850,10 +972,10 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         if path == "/health":
             task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+            health = service_health_snapshot()
             body = json.dumps(
                 {
-                    "status": "ok",
-                    "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                    **health,
                     "task": task_data,
                 },
                 ensure_ascii=False,
@@ -868,8 +990,12 @@ class StatusHandler(BaseHTTPRequestHandler):
             return
 
         status_data = read_status()
-        status_data["usage"] = public_usage(read_usage_cache())
-        status_data["task"] = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+        usage_data = read_usage_cache()
+        task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+        status_data = effective_status(status_data, task_data)
+        status_data["usage"] = public_usage(usage_data)
+        status_data["task"] = task_data
+        status_data["health"] = service_health_snapshot(usage_data)
         body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_body(200, body, "application/json; charset=utf-8")
 
@@ -880,6 +1006,27 @@ class StatusHandler(BaseHTTPRequestHandler):
 class StatusServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+
+def write_pid_file() -> None:
+    atomic_write_json(
+        PID_FILE,
+        {
+            "pid": os.getpid(),
+            "port": PORT,
+            "base_dir": str(BASE_DIR),
+            "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    )
+
+
+def remove_pid_file() -> None:
+    try:
+        data = json.loads(PID_FILE.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if data.get("pid") == os.getpid():
+        PID_FILE.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -893,6 +1040,10 @@ def main() -> int:
         return 1
 
     write_log(f"Codex status server started on {HOST}:{PORT}")
+    try:
+        write_pid_file()
+    except OSError as exc:
+        write_log(f"Codex status PID file write failed: {exc}")
     print(f"Codex status server: http://{HOST}:{PORT}/status")
     print(f"Local computer: http://127.0.0.1:{PORT}/status")
     if HOST in {"0.0.0.0", "::"}:
@@ -914,6 +1065,7 @@ def main() -> int:
     finally:
         write_log("Codex status server stopped")
         server.server_close()
+        remove_pid_file()
 
     return 0
 

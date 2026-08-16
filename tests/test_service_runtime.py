@@ -9,7 +9,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_status_server import query_live_account_usage, refresh_usage_cache_once
+from codex_status_server import (
+    effective_status,
+    query_live_account_usage,
+    refresh_usage_cache_once,
+    remove_pid_file,
+    service_health_snapshot,
+    write_pid_file,
+)
 from service_runtime import JsonlFollower, RotatingTextLog, SingleFlightWorker, TaskRefreshTracker, atomic_write_json
 
 
@@ -90,6 +97,55 @@ class ServiceRuntimeTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(calls, 2)
         self.assertEqual(maximum_concurrent, 1)
+
+    def test_single_flight_worker_reports_background_errors(self) -> None:
+        finished = threading.Event()
+
+        def failing_action() -> None:
+            finished.set()
+            raise RuntimeError("refresh failed")
+
+        worker = SingleFlightWorker(failing_action, name="test-failing-worker")
+        worker.request()
+        self.assertTrue(finished.wait(timeout=2))
+        for _ in range(100):
+            if not worker.running:
+                break
+            time.sleep(0.01)
+        self.assertIn("refresh failed", worker.snapshot()["last_error"])
+
+    def test_effective_status_uses_telemetry_after_monitor_initializes(self) -> None:
+        with patch.dict("codex_status_server.monitor_health", {"initialized": True}, clear=False):
+            result = effective_status(
+                {"status": "success", "message": "old", "updated_at": "old"},
+                {"status": "running", "stage": "正在测试", "updated_at": "new"},
+            )
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["message"], "正在测试")
+        self.assertEqual(result["updated_at"], "new")
+
+    def test_health_reports_monitor_heartbeat_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with (
+                patch("codex_status_server.CODEX_SESSIONS_DIR", Path(temporary)),
+                patch.dict(
+                    "codex_status_server.monitor_health",
+                    {"initialized": True, "heartbeat_at": time.time() - 60},
+                    clear=False,
+                ),
+            ):
+                health = service_health_snapshot({"available": False})
+        self.assertEqual(health["status"], "error")
+        self.assertIn("会话监控心跳超时", health["reasons"])
+
+    def test_pid_file_is_removed_only_by_own_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = Path(temporary) / "status-server.pid"
+            with patch("codex_status_server.PID_FILE", pid_file):
+                write_pid_file()
+                self.assertTrue(pid_file.exists())
+                remove_pid_file()
+                self.assertFalse(pid_file.exists())
 
     def test_task_refresh_tracker_refreshes_each_task_once(self) -> None:
         tracker = TaskRefreshTracker()

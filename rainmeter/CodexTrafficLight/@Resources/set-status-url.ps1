@@ -19,31 +19,38 @@ if ([string]::IsNullOrWhiteSpace($Url)) {
   exit 0
 }
 
-if ($Url -notmatch '^https?://') {
+try {
+  $uri = [Uri]$Url
+} catch {
+  $uri = $null
+}
+
+if ($null -eq $uri -or -not $uri.IsAbsoluteUri -or $uri.Scheme -notin @("http", "https")) {
   Add-Type -AssemblyName System.Windows.Forms
   [System.Windows.Forms.MessageBox]::Show("地址必须以 http:// 或 https:// 开头。", "Codex 交通灯设置") | Out-Null
   exit 1
 }
 
-$JsonUrl = $Url
-if ($JsonUrl -match '/rainmeter/?$') {
-  $JsonUrl = $JsonUrl -replace '/rainmeter/?$', '/status'
+$builder = [UriBuilder]$uri
+$normalizedPath = $builder.Path.TrimEnd("/")
+if ($normalizedPath.EndsWith("/rainmeter", [StringComparison]::OrdinalIgnoreCase)) {
+  $builder.Path = $normalizedPath.Substring(0, $normalizedPath.Length - "/rainmeter".Length) + "/status"
 }
+$JsonUrl = $builder.Uri.AbsoluteUri
 
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
 if ($content -match '(?m)^StatusUrl=.*$') {
-  $content = $content -replace '(?m)^StatusUrl=.*$', "StatusUrl=$Url"
+  $content = [regex]::Replace($content, '(?m)^StatusUrl=.*$', { param($match) "StatusUrl=$Url" })
 } else {
   $content = $content -replace '(\[Variables\]\s*)', "`$1StatusUrl=$Url`r`n"
 }
 
 if ($content -match '(?m)^JsonStatusUrl=.*$') {
-  $content = $content -replace '(?m)^JsonStatusUrl=.*$', "JsonStatusUrl=$JsonUrl"
+  $content = [regex]::Replace($content, '(?m)^JsonStatusUrl=.*$', { param($match) "JsonStatusUrl=$JsonUrl" })
 } else {
   $content = $content -replace '(\[Variables\]\s*)', "`$1JsonStatusUrl=$JsonUrl`r`n"
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
-
 
 

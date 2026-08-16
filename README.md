@@ -86,7 +86,7 @@ Codex-TrafficLight
 2. 在这台 Windows 上启动状态服务，双击：
 
 ```text
-win\codex_status_server\start-server-lan.cmd
+win\codex_status_server\start-server.cmd
 ```
 
 3. 启动后不要关闭黑色命令窗口。窗口开着，就代表状态服务还在运行。
@@ -110,7 +110,7 @@ http://127.0.0.1:8765/status
 2. 在 A 电脑上启动状态服务，双击：
 
 ```text
-win\codex_status_server\start-server.cmd
+win\codex_status_server\start-server-lan.cmd
 ```
 
 3. 在 A 电脑上查看本机 IP。
@@ -164,7 +164,7 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
 
 旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 
@@ -174,7 +174,7 @@ macOS: ~/.codex/sessions
 win\codex_status_server\start-server-background.cmd
 ```
 
-后台启动后用下面这个脚本停止：
+后台启动后用下面这个脚本停止。服务会记录自己的 PID，停止脚本会核对进程命令行，只结束本项目的状态服务，不会按端口误杀其它程序：
 
 ```text
 win\codex_status_server\stop-server.cmd
@@ -188,7 +188,7 @@ win\codex_status_server\stop-server.cmd
 http://127.0.0.1:8765/usage
 ```
 
-查看服务健康和任务遥测：
+查看服务健康和任务遥测。接口会根据监控心跳、额度查询、缓存新鲜度和 Git 后台统计返回 `ok`、`degraded` 或 `error`：
 
 ```text
 http://127.0.0.1:8765/health
@@ -411,6 +411,7 @@ EXPOSE_TASK_DETAILS=0
 | `GIT_CACHE_SECONDS` | `2` | Git 统计缓存秒数，允许 `0` 到 `60` |
 | `GIT_TIMEOUT_SECONDS` | `2.5` | 每条 Git 查询的超时秒数，允许 `0.1` 到 `30` |
 | `MONITOR_INTERVAL_SECONDS` | `0.25` | Codex 会话日志轮询间隔，允许 `0.05` 到 `60` |
+| `SESSION_DISCOVERY_INTERVAL_SECONDS` | `3` | 递归发现新会话文件的间隔，允许 `0.5` 到 `300`；已发现日志仍按监控间隔读取 |
 | `SUCCESS_HOLD_SECONDS` | `45` | 完成绿灯保持时间，允许 `0` 到 `3600` |
 | `RUNNING_STALE_SECONDS` | `300` | 多久没有任务事件后回到空闲，允许 `5` 到 `86400` |
 | `PORT` | `8765` | 状态服务端口，允许 `1` 到 `65535` |

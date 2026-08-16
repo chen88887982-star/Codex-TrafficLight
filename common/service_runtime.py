@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -128,6 +129,10 @@ class JsonlFollower:
     def tracked_count(self) -> int:
         return len(self._positions)
 
+    @property
+    def tracked_paths(self) -> set[Path]:
+        return set(self._positions)
+
 
 class SingleFlightWorker:
     """Run one background refresh at a time and coalesce overlapping requests."""
@@ -138,6 +143,9 @@ class SingleFlightWorker:
         self._lock = threading.Lock()
         self._running = False
         self._pending = False
+        self._last_started_at = 0.0
+        self._last_finished_at = 0.0
+        self._last_error = ""
 
     def request(self) -> bool:
         with self._lock:
@@ -145,13 +153,24 @@ class SingleFlightWorker:
                 self._pending = True
                 return False
             self._running = True
+            self._last_started_at = time.time()
         threading.Thread(target=self._run, name=self._name, daemon=True).start()
         return True
 
     def _run(self) -> None:
         try:
             while True:
-                self._action()
+                try:
+                    self._action()
+                except Exception as exc:
+                    with self._lock:
+                        self._last_error = f"{type(exc).__name__}: {exc}"
+                else:
+                    with self._lock:
+                        self._last_error = ""
+                finally:
+                    with self._lock:
+                        self._last_finished_at = time.time()
                 with self._lock:
                     if self._pending:
                         self._pending = False
@@ -167,6 +186,16 @@ class SingleFlightWorker:
     def running(self) -> bool:
         with self._lock:
             return self._running
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "running": self._running,
+                "pending": self._pending,
+                "last_started_at": self._last_started_at,
+                "last_finished_at": self._last_finished_at,
+                "last_error": self._last_error,
+            }
 
 
 class TaskRefreshTracker:

@@ -35,15 +35,21 @@ start.command
 第一次运行前，给脚本增加可执行权限：
 
 ```bash
-chmod +x set-status.sh start.command
+chmod +x set-status.sh start.command start-lan.command
 ```
 
 如果这里提示 `No such file or directory`，说明终端还不在这个目录里。先重新执行上面的 `cd ...`。
 
-启动服务：
+仅供 Mac 本机读取时启动：
 
 ```bash
 ./start.command
+```
+
+如果要让 Windows Rainmeter 通过局域网读取，启动：
+
+```bash
+./start-lan.command
 ```
 
 默认端口是 `8765`，接口是：
@@ -58,7 +64,7 @@ http://Mac-IP:8765/status
 http://Mac-IP:8765/health
 ```
 
-服务会恢复正在执行的任务、分别跟踪并行任务，并提供项目、Git 变更和 token 遥测。详细任务信息默认直接显示，无需密码；Rainmeter 使用 `http://Mac-IP:8765/rainmeter` 即可。需要限制访问时，可在项目根目录创建已忽略的 `status-auth.json`，配置格式见根目录 `status-auth.example.json`。
+服务会恢复正在执行的任务、分别跟踪并行任务，并提供项目、Git 变更和 token 遥测。Git 统计在后台生成快照，不会阻塞任务事件和 Rainmeter 请求。详细任务信息默认直接显示，无需密码；使用 `start-lan.command` 后，Rainmeter 可读取 `http://Mac-IP:8765/rainmeter`。需要限制访问时，可在项目根目录创建已忽略的 `status-auth.json`，配置格式见根目录 `status-auth.example.json`。
 
 日志只记录服务生命周期、异常、认证失败和未知路径，正常的每秒 Rainmeter 请求不会写入日志。默认日志上限为 5 MiB，并保留 3 份轮转备份。
 

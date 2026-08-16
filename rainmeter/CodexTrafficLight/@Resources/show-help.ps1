@@ -29,13 +29,13 @@ start.command
 
 3. 第一次运行前授权
 终端输入：
-chmod +x set-status.sh start.command
+chmod +x set-status.sh start.command start-lan.command
 
 如果提示 No such file or directory，说明还没有进入 mac/codex_status_server 目录。先重新执行第 1 步的 cd 命令。
 
 4. 启动服务
 启动：
-./start.command
+./start-lan.command
 
 终端窗口不要关闭。
 
@@ -92,7 +92,7 @@ Codex 在 A 电脑，Rainmeter 在 B 电脑：
 1. 在 A 电脑打开项目文件夹 Codex-TrafficLight。
 
 2. 在 A 电脑双击启动：
-win\codex_status_server\start-server.cmd
+win\codex_status_server\start-server-lan.cmd
 
 3. 在 A 电脑查看 IP：
 打开 cmd，输入 ipconfig

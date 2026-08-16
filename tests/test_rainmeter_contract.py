@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAIN_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "CodexTrafficLight.ini"
 SETTINGS_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "Settings" / "Settings.ini"
 VARIABLES = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "variables.inc"
+HELP_SCRIPT = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "show-help.ps1"
 
 
 class RainmeterContractTests(unittest.TestCase):
@@ -32,7 +33,13 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertEqual(match.group(26), "field-26")
 
     def test_server_payload_matches_skin_protocol(self) -> None:
-        status = {"status": "running", "message": "working", "updated_at": "now"}
+        status = {
+            "status": "running",
+            "message": "working",
+            "updated_at": "now",
+            "task_usage_primary_label": "-1%",
+            "task_usage_secondary_label": "-2%",
+        }
         usage = {
             "primary_remaining_percent": "70%",
             "primary_resets_at": "tomorrow",
@@ -62,6 +69,14 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("project|task|another-project|main", payload)
         self.assertEqual(fields[17], "本次 2 项 +10 -2")
         self.assertEqual(fields[25], "待同步 1 项 +4 -0")
+        self.assertEqual(fields[11:13], ["-1%", "-2%"])
+
+    def test_help_uses_lan_launchers_only_for_remote_computers(self) -> None:
+        text = HELP_SCRIPT.read_text(encoding="utf-8-sig")
+        self.assertIn("本机 Windows 使用", text)
+        self.assertIn("win\\codex_status_server\\start-server.cmd", text)
+        self.assertIn("win\\codex_status_server\\start-server-lan.cmd", text)
+        self.assertIn("./start-lan.command", text)
 
     def test_task_card_and_dynamic_credits_are_present(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")

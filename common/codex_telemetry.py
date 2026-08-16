@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -116,6 +116,7 @@ class CodexTelemetry:
         task_stats_scope: str = "task",
         git_exclude_patterns: Iterable[str] = (),
         include_mode_only: bool = False,
+        background_git_statistics: bool = False,
     ) -> None:
         self.codex_home = codex_home
         self.git_cache_seconds = git_cache_seconds
@@ -123,10 +124,15 @@ class CodexTelemetry:
         self.task_stats_scope = task_stats_scope if task_stats_scope in {"turn", "task", "service"} else "task"
         self.git_exclude_patterns = tuple(pattern.strip() for pattern in git_exclude_patterns if pattern.strip())
         self.include_mode_only = include_mode_only
+        self.background_git_statistics = background_git_statistics
         self._tasks: dict[Path, SessionTask] = {}
         self._thread_cache: dict[str, dict[str, object]] = {}
         self._git_cache: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
         self._service_git_baselines: dict[str, str] = {}
+        self._git_refreshing: set[tuple[str, str]] = set()
+        self._git_generations: dict[str, int] = {}
+        self._git_last_finished_at = 0.0
+        self._git_last_error = ""
         self._lock = threading.RLock()
 
     def task_for(self, path: Path) -> SessionTask:
@@ -300,7 +306,8 @@ class CodexTelemetry:
             other_active = [item for item in active if item is not task]
             other_active.sort(key=lambda item: item.updated_at, reverse=True)
             self._enrich_thread(task)
-            git = self._git_stats(task)
+            baseline = self._task_baseline(task)
+            task_snapshot = replace(task, patch_files=set(task.patch_files))
             elapsed = 0
             if task.status in ACTIVE_STATES and task.started_at:
                 elapsed = max(0, int(time.time() - task.started_at))
@@ -310,7 +317,7 @@ class CodexTelemetry:
             if task.context_window and task.last_tokens:
                 context_percent = min(100, round(task.last_tokens * 100 / task.context_window))
             event_age = max(0, int(time.time() - task.updated_at)) if task.updated_at else 0
-            return {
+            snapshot = {
                 "session_id": task.session_id,
                 "turn_id": task.turn_id,
                 "status": task.status,
@@ -337,8 +344,8 @@ class CodexTelemetry:
                 else "",
                 "event_age_seconds": event_age,
                 "health_label": self._health_label(event_age, bool(active)),
-                **git,
             }
+        return {**snapshot, **self._git_snapshot(task_snapshot, baseline)}
 
     def public_snapshot(self, *, expose_details: bool = False) -> dict[str, object]:
         snapshot = self.snapshot()
@@ -377,10 +384,54 @@ class CodexTelemetry:
                     expired = True
         return expired
 
+    def expire_completed(self, hold_seconds: int) -> bool:
+        expired = False
+        cutoff = time.time() - max(0, hold_seconds)
+        with self._lock:
+            for task in self._tasks.values():
+                completed_at = task.completed_at or task.updated_at
+                if task.status == "success" and completed_at and completed_at < cutoff:
+                    task.status = "idle"
+                    task.stage = "Codex 空闲"
+                    expired = True
+        return expired
+
+    def active_paths(self) -> set[Path]:
+        with self._lock:
+            return {task.path for task in self._tasks.values() if task.status in ACTIVE_STATES and not task.ignored}
+
+    def prune(self, active_paths: set[Path]) -> None:
+        resolved = {path.resolve() for path in active_paths}
+        with self._lock:
+            removed = [path for path in self._tasks if path not in resolved]
+            removed_sessions = {self._tasks[path].session_id for path in removed if self._tasks[path].session_id}
+            for path in removed:
+                self._tasks.pop(path, None)
+            retained_sessions = {task.session_id for task in self._tasks.values() if task.session_id}
+            for session_id in removed_sessions - retained_sessions:
+                self._thread_cache.pop(session_id, None)
+            retained_cwds = {task.cwd for task in self._tasks.values() if task.cwd}
+            for key in list(self._git_cache):
+                if key[0] not in retained_cwds:
+                    self._git_cache.pop(key, None)
+            for cwd in list(self._service_git_baselines):
+                if cwd not in retained_cwds:
+                    self._service_git_baselines.pop(cwd, None)
+
+    def runtime_health(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "tracked_tasks": len(self._tasks),
+                "git_refreshing": len(self._git_refreshing),
+                "git_last_finished_at": self._git_last_finished_at,
+                "git_last_error": self._git_last_error,
+            }
+
     def invalidate_git(self, cwd: str) -> None:
         if not cwd:
             return
         with self._lock:
+            self._git_generations[cwd] = self._git_generations.get(cwd, 0) + 1
             for key in list(self._git_cache):
                 if key[0] == cwd:
                     self._git_cache.pop(key, None)
@@ -495,7 +546,46 @@ class CodexTelemetry:
         basename = normalized.rsplit("/", 1)[-1]
         return any(fnmatch(normalized, pattern) or fnmatch(basename, pattern) for pattern in self.git_exclude_patterns)
 
-    def _git_stats(self, task: SessionTask) -> dict[str, object]:
+    def _git_snapshot(self, task: SessionTask, baseline: str) -> dict[str, object]:
+        if not self.background_git_statistics:
+            return self._git_stats(task, baseline)
+
+        key = (task.cwd, baseline)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._git_cache.get(key)
+            fresh = cached and now - cached[0] < self.git_cache_seconds
+            if not fresh and key not in self._git_refreshing:
+                self._git_refreshing.add(key)
+                generation = self._git_generations.get(task.cwd, 0)
+                threading.Thread(
+                    target=self._refresh_git_snapshot,
+                    args=(task, baseline, key, generation),
+                    name="codex-git-statistics",
+                    daemon=True,
+                ).start()
+            if cached:
+                return cached[1].copy()
+        return self._empty_git_stats(task)
+
+    def _refresh_git_snapshot(self, task: SessionTask, baseline: str, key: tuple[str, str], generation: int) -> None:
+        try:
+            result = self._git_stats(task, baseline, use_cache=False, cache_result=False)
+        except Exception as exc:
+            with self._lock:
+                self._git_last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            with self._lock:
+                if self._git_generations.get(task.cwd, 0) == generation:
+                    self._git_cache[key] = (time.monotonic(), result.copy())
+                self._git_last_error = ""
+                self._git_last_finished_at = time.time()
+        finally:
+            with self._lock:
+                self._git_refreshing.discard(key)
+
+    @staticmethod
+    def _empty_git_stats(task: SessionTask) -> dict[str, object]:
         empty = {
             "git_available": False,
             "git_branch": task.git_branch,
@@ -515,13 +605,26 @@ class CodexTelemetry:
             "git_sync_label": "待同步 --",
             "git_cumulative_label": "待同步 --",
         }
+        return empty
+
+    def _git_stats(
+        self,
+        task: SessionTask,
+        baseline: str | None = None,
+        *,
+        use_cache: bool = True,
+        cache_result: bool = True,
+    ) -> dict[str, object]:
+        empty = self._empty_git_stats(task)
         if not task.cwd or not Path(task.cwd).is_dir():
             return empty
-        baseline = self._task_baseline(task)
+        baseline = baseline or self._task_baseline(task)
         key = (task.cwd, baseline)
-        cached = self._git_cache.get(key)
-        if cached and time.monotonic() - cached[0] < self.git_cache_seconds:
-            return cached[1].copy()
+        if use_cache:
+            with self._lock:
+                cached = self._git_cache.get(key)
+                if cached and time.monotonic() - cached[0] < self.git_cache_seconds:
+                    return cached[1].copy()
 
         def git(*args: str) -> tuple[int, str]:
             try:
@@ -672,7 +775,9 @@ class CodexTelemetry:
             "git_sync_label": cumulative_label,
             "git_cumulative_label": cumulative_label,
         }
-        self._git_cache[key] = (time.monotonic(), result.copy())
+        if cache_result:
+            with self._lock:
+                self._git_cache[key] = (time.monotonic(), result.copy())
         return result
 
     @staticmethod

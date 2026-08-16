@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -280,6 +282,62 @@ class CodexTelemetryTests(unittest.TestCase):
 
             source.write_text("one\ntwo\n", encoding="utf-8")
             self.assertEqual(tracker.snapshot()["git_change_label"], "本次 1 项  +1  -0")
+
+    def test_background_git_statistics_do_not_block_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracker = CodexTelemetry(root, background_git_statistics=True)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            task = tracker.task_for(path)
+            task.session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            task.cwd = str(root)
+            task.status = "running"
+            task.updated_at = time.time()
+            release = threading.Event()
+            finished = threading.Event()
+
+            def slow_git(*args: object, **kwargs: object) -> dict[str, object]:
+                release.wait(timeout=2)
+                finished.set()
+                return {**tracker._empty_git_stats(task), "git_branch": "background"}
+
+            with patch.object(tracker, "_git_stats", side_effect=slow_git):
+                started = time.monotonic()
+                snapshot = tracker.snapshot()
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 0.25)
+                self.assertFalse(snapshot["git_available"])
+                release.set()
+                self.assertTrue(finished.wait(timeout=2))
+                for _ in range(100):
+                    if tracker.snapshot()["git_branch"] == "background":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(tracker.snapshot()["git_branch"], "background")
+
+    def test_prune_releases_completed_task_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracker = CodexTelemetry(root)
+            keep = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            remove = root / "rollout-019ffd18-a03f-7cd2-a003-9521a17e3090.jsonl"
+            tracker.task_for(keep).session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            tracker.task_for(remove).session_id = "019ffd18-a03f-7cd2-a003-9521a17e3090"
+            tracker.prune({keep})
+            self.assertEqual(tracker.runtime_health()["tracked_tasks"], 1)
+
+    def test_completed_task_expires_to_idle_after_hold(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracker = CodexTelemetry(root)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            task = tracker.task_for(path)
+            task.session_id = "019ffd23-fd68-7952-afc5-78495e834d2e"
+            task.status = "success"
+            task.completed_at = time.time() - 60
+            task.updated_at = task.completed_at
+            self.assertTrue(tracker.expire_completed(45))
+            self.assertEqual(tracker.snapshot()["status"], "idle")
 
 
 if __name__ == "__main__":

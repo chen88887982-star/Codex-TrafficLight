@@ -22,10 +22,16 @@ http://这台Windows的局域网IP:8765/status
 Codex-TrafficLight
 ```
 
-然后双击：
+本机 Rainmeter 读取时双击：
 
 ```text
 win\codex_status_server\start-server.cmd
+```
+
+如果要让另一台电脑读取，改为双击：
+
+```text
+win\codex_status_server\start-server-lan.cmd
 ```
 
 如果命令窗口保持打开，说明服务正在运行。关闭窗口后服务停止。
@@ -57,7 +63,7 @@ win\codex_status_server\start-server.cmd
 http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌
 ```
 
-默认监控间隔是 0.25 秒，Rainmeter 默认 1 秒读取一次 `/rainmeter`。
+默认每 0.25 秒读取已发现的活动日志，每 3 秒发现一次新会话文件，Rainmeter 默认 1 秒读取一次 `/rainmeter`。Git 统计在后台生成快照，不会阻塞任务事件和 Rainmeter 请求。
 
 额度查询在后台执行，不会阻塞任务事件监听；正常的 `/rainmeter` 轮询不会写入日志。日志默认上限为 5 MiB，并保留 3 份轮转备份。
 
@@ -100,7 +106,7 @@ cd $HOME\Desktop\Codex-TrafficLight\win\codex_status_server
 http://127.0.0.1:8765/status
 ```
 
-服务健康与任务数据：
+服务健康与任务数据；健康状态会反映监控心跳、额度查询和缓存是否正常：
 
 ```text
 http://127.0.0.1:8765/health
