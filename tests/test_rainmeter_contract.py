@@ -126,6 +126,19 @@ class RainmeterContractTests(unittest.TestCase):
             with self.subTest(section=name):
                 self.assertIn("FontColor=#AccentTextColor#", sections[name])
 
+    def test_primary_usage_delta_does_not_overlap_main_value(self) -> None:
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
+        value = sections["MeterUsagePrimaryValue"]
+        pill = sections["MeterUsagePrimaryDeltaPill"]
+
+        value_center_y = int(re.search(r"(?m)^Y=(\d+)$", value).group(1))
+        value_height = int(re.search(r"(?m)^H=(\d+)$", value).group(1))
+        pill_y = int(re.search(r"(?m)^Y=(\d+)$", pill).group(1))
+        pill_height = int(re.search(r"Shape=Rectangle 0,0,\d+,(\d+),", pill).group(1))
+
+        self.assertLessEqual(pill_y + pill_height, value_center_y - value_height // 2)
+
 
 if __name__ == "__main__":
     unittest.main()
