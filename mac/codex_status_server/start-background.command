@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PORT="${PORT:-8765}"
+PORT="${PORT:-8767}"
 HOST="${HOST:-127.0.0.1}"
 HEALTH_URL="http://127.0.0.1:${PORT}/health"
 EXPECTED_SERVICE="codex-traffic-light-status"

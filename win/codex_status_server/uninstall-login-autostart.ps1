@@ -1,4 +1,4 @@
-﻿param([string]$TaskName = "CodexTrafficLight-Status-8765")
+﻿param([string]$TaskName = "CodexTrafficLight-Status-8767")
 $ErrorActionPreference = "Stop"
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false

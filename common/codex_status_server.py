@@ -106,7 +106,8 @@ USAGE_CACHE_FILE = BASE_DIR / "usage-cache.json"
 LOG_FILE = BASE_DIR / "status-server.log"
 PID_FILE = BASE_DIR / "status-server.pid"
 HOST = os.environ.get("HOST", "127.0.0.1")
-PORT = read_env_int("PORT", 8765, 1, 65535)
+DEFAULT_STATUS_PORT = 8767
+PORT = read_env_int("PORT", DEFAULT_STATUS_PORT, 1, 65535)
 AUTO_MONITOR = read_env_bool("AUTO_MONITOR_CODEX", True)
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
@@ -1125,7 +1126,7 @@ class StatusHandler(BaseHTTPRequestHandler):
 
 class StatusServer(ThreadingHTTPServer):
     daemon_threads = True
-    # Do not allow a second listener to share 8765. Platform launchers also
+    # Do not allow a second listener to share the status port. Platform launchers also
     # checks /health, while this socket setting closes the startup race.
     allow_reuse_address = False
 

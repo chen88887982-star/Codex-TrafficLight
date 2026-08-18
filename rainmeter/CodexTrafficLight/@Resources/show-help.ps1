@@ -41,7 +41,7 @@ chmod +x set-status.sh start.command start-lan.command
 
 5. 先在 Mac 本机验证
 终端输入：
-curl http://127.0.0.1:8765/status
+curl http://127.0.0.1:8767/status
 
 能看到 JSON，说明 Mac 服务已经启动。
 
@@ -55,11 +55,11 @@ ipconfig getifaddr en1
 
 7. Windows Rainmeter 填写地址
 假设 Mac IP 是 192.168.2.50：
-http://192.168.2.50:8765/rainmeter
+http://192.168.2.50:8767/rainmeter
 
 8. Windows 浏览器验证
 Windows 浏览器先打开：
-http://192.168.2.50:8765/status
+http://192.168.2.50:8767/status
 
 能看到 JSON，Rainmeter 就能读取。
 
@@ -81,10 +81,10 @@ win\codex_status_server\start-server.cmd
 3. 黑色命令窗口不要关闭，窗口开着代表服务正在运行。
 
 4. Rainmeter 设置地址填：
-http://127.0.0.1:8765/rainmeter
+http://127.0.0.1:8767/rainmeter
 
 5. 浏览器验证：
-http://127.0.0.1:8765/status
+http://127.0.0.1:8767/status
 
 二、Win + Win 跨电脑使用
 Codex 在 A 电脑，Rainmeter 在 B 电脑：
@@ -99,10 +99,10 @@ win\codex_status_server\start-server-lan.cmd
 找到正在联网网卡的 IPv4 地址，例如 192.168.2.112。
 
 4. 在 B 电脑浏览器验证：
-http://192.168.2.112:8765/status
+http://192.168.2.112:8767/status
 
 5. 在 B 电脑 Rainmeter 设置地址填：
-http://192.168.2.112:8765/rainmeter
+http://192.168.2.112:8767/rainmeter
 
 三、常见问题
 如果跨电脑打不开，检查：

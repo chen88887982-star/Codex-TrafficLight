@@ -52,19 +52,19 @@ chmod +x set-status.sh start.command start-lan.command
 ./start-lan.command
 ```
 
-默认端口是 `8765`，接口是：
+默认端口是 `8767`，接口是：
 
 ```text
-http://Mac-IP:8765/status
+http://Mac-IP:8767/status
 ```
 
 健康检查：
 
 ```text
-http://Mac-IP:8765/health
+http://Mac-IP:8767/health
 ```
 
-服务会恢复正在执行的任务、分别跟踪并行任务，并提供项目、Git 变更和 token 遥测。Git 统计在后台生成快照，不会阻塞任务事件和 Rainmeter 请求。详细任务信息默认直接显示，无需密码；使用 `start-lan.command` 后，Rainmeter 可读取 `http://Mac-IP:8765/rainmeter`。需要限制访问时，可在项目根目录创建已忽略的 `status-auth.json`，配置格式见根目录 `status-auth.example.json`。
+服务会恢复正在执行的任务、分别跟踪并行任务，并提供项目、Git 变更和 token 遥测。Git 统计在后台生成快照，不会阻塞任务事件和 Rainmeter 请求。详细任务信息默认直接显示，无需密码；使用 `start-lan.command` 后，Rainmeter 可读取 `http://Mac-IP:8767/rainmeter`。需要限制访问时，可在项目根目录创建已忽略的 `status-auth.json`，配置格式见根目录 `status-auth.example.json`。
 
 日志只记录服务生命周期、异常、认证失败和未知路径，正常的每秒 Rainmeter 请求不会写入日志。默认日志上限为 5 MiB，并保留 3 份轮转备份。
 
@@ -115,4 +115,4 @@ cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 ./uninstall-login-autostart.command
 ```
 
-`start-background.command` 默认监听 `127.0.0.1:8765`；`start-lan-background.command` 才监听 `0.0.0.0:8765`，先检查 `/health` 的服务身份，相同服务已运行时不会重复启动。`stop.command` 同时核对 PID 和完整 `server.py` 路径。登录启动使用 `~/Library/LaunchAgents/com.codex.trafficlight.status.plist`；卸载脚本只删除 LaunchAgent，当前服务可另用 `stop.command` 停止。
+`start-background.command` 默认监听 `127.0.0.1:8767`；`start-lan-background.command` 才监听 `0.0.0.0:8767`，先检查 `/health` 的服务身份，相同服务已运行时不会重复启动。`stop.command` 同时核对 PID 和完整 `server.py` 路径。登录启动使用 `~/Library/LaunchAgents/com.codex.trafficlight.status.plist`；卸载脚本只删除 LaunchAgent，当前服务可另用 `stop.command` 停止。

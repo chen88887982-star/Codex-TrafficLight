@@ -1,6 +1,6 @@
 ﻿param(
   [string]$HostName = "127.0.0.1",
-  [int]$Port = 8765,
+  [int]$Port = 8767,
   [int]$StartupTimeoutSeconds = 20
 )
 
@@ -26,7 +26,7 @@ function Get-StatusHealth {
 
 $health = Get-StatusHealth
 if ($null -ne $health) {
-  Write-Output "[OK] 8765 状态服务已在运行，未重复启动。"
+  Write-Output "[OK] 8767 状态服务已在运行，未重复启动。"
   exit 0
 }
 
@@ -68,7 +68,7 @@ do {
       $servicePid = [int]$pidRecord.pid
     } catch {
     }
-    Write-Output "[OK] 8765 状态服务已隐藏运行，PID=$servicePid，健康状态=$($health.status)。"
+    Write-Output "[OK] 8767 状态服务已隐藏运行，PID=$servicePid，健康状态=$($health.status)。"
     exit 0
   }
   if ($process.HasExited) {

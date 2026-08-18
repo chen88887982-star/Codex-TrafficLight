@@ -1,4 +1,4 @@
-﻿param([string]$TaskName = "CodexTrafficLight-Status-8765")
+﻿param([string]$TaskName = "CodexTrafficLight-Status-8767")
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $StartScript = Join-Path $ScriptDir "start-server-background.ps1"
@@ -9,5 +9,5 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoi
   -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
-  -Principal $principal -Description "登录后隐藏启动 CodexTrafficLight 共用 8765 状态服务" -Force | Out-Null
+  -Principal $principal -Description "登录后隐藏启动 CodexTrafficLight 共用 8767 状态服务" -Force | Out-Null
 Write-Output "[OK] 已注册登录自启动任务：$TaskName"

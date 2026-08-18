@@ -4,7 +4,7 @@ import re
 import unittest
 from pathlib import Path
 
-from codex_status_server import build_rainmeter_payload
+from codex_status_server import DEFAULT_STATUS_PORT, build_rainmeter_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "CodexTrafficLight.ini"
@@ -108,6 +108,19 @@ class RainmeterContractTests(unittest.TestCase):
             "uninstall-login-autostart.command",
         ):
             self.assertTrue((service_dir / name).is_file(), name)
+
+    def test_default_status_port_is_8767_across_service_and_skin(self) -> None:
+        self.assertEqual(DEFAULT_STATUS_PORT, 8767)
+        variables = VARIABLES.read_text(encoding="utf-16")
+        self.assertIn("StatusUrl=http://127.0.0.1:8767/rainmeter", variables)
+        self.assertIn("JsonStatusUrl=http://127.0.0.1:8767/status", variables)
+
+        mac_background = (ROOT / "mac" / "codex_status_server" / "start-background.command").read_text(encoding="utf-8")
+        win_background = (ROOT / "win" / "codex_status_server" / "start-server-background.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn('PORT="${PORT:-8767}"', mac_background)
+        self.assertIn("[int]$Port = 8767", win_background)
 
     def test_task_card_and_dynamic_credits_are_present(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")

@@ -19,9 +19,9 @@
 
 | 装备组合 | 状态服务运行位置 | Rainmeter 配置 |
 |---|---|---|
-| Win + Win 同一台电脑 | 本机 Windows | `http://127.0.0.1:8765/rainmeter` |
-| Win + 另一台 Win | 运行 Codex 的 Windows | `http://对方Windows-IP:8765/rainmeter` |
-| Win + Mac | 运行 Codex 的 Mac | `http://Mac-IP:8765/rainmeter` |
+| Win + Win 同一台电脑 | 本机 Windows | `http://127.0.0.1:8767/rainmeter` |
+| Win + 另一台 Win | 运行 Codex 的 Windows | `http://对方Windows-IP:8767/rainmeter` |
+| Win + Mac | 运行 Codex 的 Mac | `http://Mac-IP:8767/rainmeter` |
 
 Rainmeter 只负责读取 `StatusUrl`。所以两套装备通用的关键就是：哪台电脑运行 Codex，就在哪台电脑启动状态服务。
 
@@ -52,19 +52,19 @@ CodexTrafficLight\CodexTrafficLight.ini
 默认配置适合 Codex 和 Rainmeter 都在同一台 Windows：
 
 ```ini
-StatusUrl=http://127.0.0.1:8765/rainmeter
+StatusUrl=http://127.0.0.1:8767/rainmeter
 ```
 
 跨电脑时，在设置页把地址改成运行 Codex 那台电脑的局域网 IP：
 
 ```ini
-StatusUrl=http://对方IP:8765/rainmeter
+StatusUrl=http://对方IP:8767/rainmeter
 ```
 
 浏览器验证服务是否可访问时，用 `/status`：
 
 ```text
-http://对方IP:8765/status
+http://对方IP:8767/status
 ```
 
 查看 Windows 本机 IP：在运行 Codex 的 Windows 上打开命令提示符，输入 `ipconfig`，找当前联网网卡下的 `IPv4 地址`，通常是 `192.168.x.x`、`10.x.x.x` 或 `172.16-31.x.x`。
@@ -94,13 +94,13 @@ win\codex_status_server\start-server.cmd
 4. Rainmeter 设置页里填：
 
 ```text
-http://127.0.0.1:8765/rainmeter
+http://127.0.0.1:8767/rainmeter
 ```
 
 5. 浏览器验证：
 
 ```text
-http://127.0.0.1:8765/status
+http://127.0.0.1:8767/status
 ```
 
 ### 方式 B：Codex 在一台 Windows，Rainmeter 在另一台 Windows
@@ -130,25 +130,25 @@ ipconfig
 4. 在 Rainmeter 那台 B 电脑的浏览器验证：
 
 ```text
-http://运行Codex电脑的IP:8765/status
+http://运行Codex电脑的IP:8767/status
 ```
 
 例如：
 
 ```text
-http://192.168.2.112:8765/status
+http://192.168.2.112:8767/status
 ```
 
 5. 在 B 电脑的 Rainmeter 设置页填：
 
 ```text
-http://运行Codex电脑的IP:8765/rainmeter
+http://运行Codex电脑的IP:8767/rainmeter
 ```
 
 例如：
 
 ```text
-http://192.168.2.112:8765/rainmeter
+http://192.168.2.112:8767/rainmeter
 ```
 
 ### Windows 端说明
@@ -185,19 +185,19 @@ win\codex_status_server\stop-server.cmd
 查看剩余额度接口：
 
 ```text
-http://127.0.0.1:8765/usage
+http://127.0.0.1:8767/usage
 ```
 
 查看服务健康和任务遥测。接口会根据监控心跳、额度查询、缓存新鲜度和 Git 后台统计返回 `ok`、`degraded` 或 `error`：
 
 ```text
-http://127.0.0.1:8765/health
+http://127.0.0.1:8767/health
 ```
 
 如果是另一台 Windows 读取，就在另一台电脑浏览器打开：
 
 ```text
-http://运行Codex电脑的IP:8765/status
+http://运行Codex电脑的IP:8767/status
 ```
 
 Windows 状态服务会写日志：
@@ -283,7 +283,7 @@ chmod +x set-status.sh start.command start-lan.command
 6. 先在 Mac 本机验证服务：
 
 ```bash
-curl http://127.0.0.1:8765/status
+curl http://127.0.0.1:8767/status
 ```
 
 能看到 JSON 内容，说明 Mac 服务已经启动成功。
@@ -311,25 +311,25 @@ ipconfig getifaddr en1
 8. 在 Windows 浏览器验证：
 
 ```text
-http://Mac-IP:8765/status
+http://Mac-IP:8767/status
 ```
 
 例如：
 
 ```text
-http://192.168.2.50:8765/status
+http://192.168.2.50:8767/status
 ```
 
 9. 在 Windows Rainmeter 设置页填：
 
 ```text
-http://Mac-IP:8765/rainmeter
+http://Mac-IP:8767/rainmeter
 ```
 
 例如：
 
 ```text
-http://192.168.2.50:8765/rainmeter
+http://192.168.2.50:8767/rainmeter
 ```
 
 ### Mac 端手动切换状态
@@ -371,7 +371,7 @@ Rainmeter 对中文配置文件的编码比较敏感。本项目的 Rainmeter �
 默认情况下，`/status`、`/health` 和 `/rainmeter` 会直接输出项目名、任务标题、Git、token 和模型详情，Rainmeter 地址不需要附加密码：
 
 ```text
-http://运行Codex电脑的IP:8765/rainmeter
+http://运行Codex电脑的IP:8767/rainmeter
 ```
 
 如果以后需要限制访问，可以选择启用令牌：
@@ -382,7 +382,7 @@ http://运行Codex电脑的IP:8765/rainmeter
 4. 在 Rainmeter 设置页把地址写成带同一令牌的形式：
 
 ```text
-http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌
+http://运行Codex电脑的IP:8767/rainmeter?token=你的令牌
 ```
 
 也可以不用 JSON，改用环境变量启用令牌：
@@ -414,7 +414,7 @@ EXPOSE_TASK_DETAILS=0
 | `SESSION_DISCOVERY_INTERVAL_SECONDS` | `3` | 递归发现新会话文件的间隔，允许 `0.5` 到 `300`；已发现日志仍按监控间隔读取 |
 | `SUCCESS_HOLD_SECONDS` | `45` | 完成绿灯保持时间，允许 `0` 到 `3600` |
 | `RUNNING_STALE_SECONDS` | `300` | 多久没有任务事件后回到空闲，允许 `5` 到 `86400` |
-| `PORT` | `8765` | 状态服务端口，允许 `1` 到 `65535` |
+| `PORT` | `8767` | 状态服务端口，允许 `1` 到 `65535` |
 
 例如，让“本次”只统计当前一轮，同时忽略临时目录和纯权限变化：
 
@@ -469,9 +469,9 @@ python -m unittest discover -s tests -v
 
 Rainmeter 的 `.ini` 和 `.inc` 必须保持 UTF-16LE with BOM。提交前还应检查两端 Python 语法、Rainmeter 编码和 `git diff --check`。
 
-## Windows 8765 隐藏后台服务
+## Windows 8767 隐藏后台服务
 
-Windows 上以 `win\codex_status_server` 为唯一状态服务目录。`start-server-background.cmd` 会先检查 `http://127.0.0.1:8765/health`，确认相同服务已运行时直接退出；端口被其他程序占用时会报错，不会重复启动。服务进程使用隐藏窗口运行。
+Windows 上以 `win\codex_status_server` 为唯一状态服务目录。`start-server-background.cmd` 会先检查 `http://127.0.0.1:8767/health`，确认相同服务已运行时直接退出；端口被其他程序占用时会报错，不会重复启动。服务进程使用隐藏窗口运行。
 
 - 本机后台启动：`win\codex_status_server\start-server-background.cmd`
 - 局域网后台启动：`win\codex_status_server\start-server-lan-background.cmd`
@@ -482,7 +482,7 @@ Windows 上以 `win\codex_status_server` 为唯一状态服务目录。`start-se
 
 配置访问令牌后，本机回环地址仍可供 Rainmeter 直接读取；局域网客户端必须继续携带正确令牌。
 
-## macOS 8765 后台服务
+## macOS 8767 后台服务
 
 macOS 保留原有前台 `start.command` / `start-lan.command`，并提供与 Windows 对齐的后台管理入口：
 

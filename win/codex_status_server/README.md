@@ -5,13 +5,13 @@
 本机读取：
 
 ```text
-http://127.0.0.1:8765/status
+http://127.0.0.1:8767/status
 ```
 
 另一台电脑读取：
 
 ```text
-http://这台Windows的局域网IP:8765/status
+http://这台Windows的局域网IP:8767/status
 ```
 
 ## 启动服务
@@ -60,7 +60,7 @@ win\codex_status_server\start-server-lan.cmd
 项目名、任务标题、Git 变更、token 和模型信息默认直接显示，无需密码。需要限制局域网访问时，可在项目根目录创建 `status-auth.json`，格式参考 `status-auth.example.json`，然后把 Rainmeter 地址设为：
 
 ```text
-http://运行Codex电脑的IP:8765/rainmeter?token=你的令牌
+http://运行Codex电脑的IP:8767/rainmeter?token=你的令牌
 ```
 
 默认每 0.25 秒读取已发现的活动日志，每 3 秒发现一次新会话文件，Rainmeter 默认 1 秒读取一次 `/rainmeter`。Git 统计在后台生成快照，不会阻塞任务事件和 Rainmeter 请求。
@@ -103,20 +103,20 @@ cd $HOME\Desktop\Codex-TrafficLight\win\codex_status_server
 浏览器打开：
 
 ```text
-http://127.0.0.1:8765/status
+http://127.0.0.1:8767/status
 ```
 
 服务健康与任务数据；健康状态会反映监控心跳、额度查询和缓存是否正常：
 
 ```text
-http://127.0.0.1:8765/health
+http://127.0.0.1:8767/health
 ```
 
 能看到 JSON 就表示 Rainmeter 可以读取。
 
 ## 隐藏运行、健康检查与登录自启动
 
-`start-server-background.cmd` 默认监听 `0.0.0.0:8765`，通过隐藏的 PowerShell/Python 进程运行。它先校验 `/health` 的服务身份，再决定复用、启动或拒绝被其他程序占用的端口。
+`start-server-background.cmd` 默认监听 `0.0.0.0:8767`，通过隐藏的 PowerShell/Python 进程运行。它先校验 `/health` 的服务身份，再决定复用、启动或拒绝被其他程序占用的端口。
 
 ```text
 start-server-background.cmd
@@ -126,4 +126,4 @@ install-login-autostart.cmd
 uninstall-login-autostart.cmd
 ```
 
-计划任务名称为 `CodexTrafficLight-Status-8765`，设置为当前用户登录后启动且忽略重复实例。配置令牌时，本机 `127.0.0.1`/`::1` 免令牌，局域网请求必须带令牌。
+计划任务名称为 `CodexTrafficLight-Status-8767`，设置为当前用户登录后启动且忽略重复实例。配置令牌时，本机 `127.0.0.1`/`::1` 免令牌，局域网请求必须带令牌。
