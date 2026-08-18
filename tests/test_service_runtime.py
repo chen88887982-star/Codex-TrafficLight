@@ -17,6 +17,7 @@ from codex_status_server import (
     query_live_account_usage,
     refresh_usage_cache_once,
     remove_pid_file,
+    request_authorized,
     service_health_snapshot,
     usage_from_session_rate_limits,
     write_pid_file,
@@ -140,7 +141,17 @@ class ServiceRuntimeTests(unittest.TestCase):
             ):
                 health = service_health_snapshot({"available": False})
         self.assertEqual(health["status"], "error")
+        self.assertFalse(health["ok"])
+        self.assertEqual(health["service"], "codex-traffic-light-status")
         self.assertIn("会话监控心跳超时", health["reasons"])
+
+    def test_status_token_is_required_only_for_non_loopback_clients(self) -> None:
+        with patch("codex_status_server.STATUS_ACCESS_TOKEN", "secret-token"):
+            self.assertTrue(request_authorized("127.0.0.1", {}, ""))
+            self.assertTrue(request_authorized("::1", {}, ""))
+            self.assertFalse(request_authorized("192.168.2.117", {}, ""))
+            self.assertTrue(request_authorized("192.168.2.117", {"token": ["secret-token"]}, ""))
+            self.assertTrue(request_authorized("192.168.2.117", {}, "Bearer secret-token"))
 
     def test_pid_file_is_removed_only_by_own_process(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

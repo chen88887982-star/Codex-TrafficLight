@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -269,6 +270,8 @@ def service_health_snapshot(usage: dict[str, object] | None = None) -> dict[str,
 
     label = "服务正常" if level == "ok" else f"服务{'异常' if level == 'error' else '降级'} · {reasons[0]}"
     return {
+        "ok": level != "error",
+        "service": "codex-traffic-light-status",
         "status": level,
         "label": label,
         "reasons": reasons,
@@ -281,6 +284,21 @@ def service_health_snapshot(usage: dict[str, object] | None = None) -> dict[str,
         "usage_query": account,
         "telemetry": telemetry,
     }
+
+
+def request_authorized(client_address: str, query: dict[str, list[str]], authorization: str) -> bool:
+    """Keep local Rainmeter access simple while protecting LAN endpoints."""
+    try:
+        if ipaddress.ip_address(client_address).is_loopback:
+            return True
+    except ValueError:
+        pass
+    if not STATUS_ACCESS_TOKEN:
+        return True
+    supplied = query.get("token", [""])[0]
+    if authorization.startswith("Bearer "):
+        supplied = authorization[7:]
+    return hmac.compare_digest(supplied, STATUS_ACCESS_TOKEN)
 
 
 def is_approval_review_event(event: dict[str, object]) -> bool:
@@ -1044,13 +1062,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def authorized(self, query: dict[str, list[str]]) -> bool:
-        if not STATUS_ACCESS_TOKEN:
-            return True
-        supplied = query.get("token", [""])[0]
-        authorization = self.headers.get("Authorization", "")
-        if authorization.startswith("Bearer "):
-            supplied = authorization[7:]
-        return hmac.compare_digest(supplied, STATUS_ACCESS_TOKEN)
+        return request_authorized(self.client_address[0], query, self.headers.get("Authorization", ""))
 
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
@@ -1113,7 +1125,9 @@ class StatusHandler(BaseHTTPRequestHandler):
 
 class StatusServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # Do not allow a second listener to share 8765. Platform launchers also
+    # checks /health, while this socket setting closes the startup race.
+    allow_reuse_address = False
 
 
 def write_pid_file() -> None:

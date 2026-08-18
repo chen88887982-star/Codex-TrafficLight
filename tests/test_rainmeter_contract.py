@@ -79,6 +79,36 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("win\\codex_status_server\\start-server-lan.cmd", text)
         self.assertIn("./start-lan.command", text)
 
+    def test_background_service_scripts_do_not_pause_or_open_persistent_console(self) -> None:
+        service_dir = ROOT / "win" / "codex_status_server"
+        background = (service_dir / "start-server-background.cmd").read_text(encoding="utf-8")
+        stop = (service_dir / "stop-server.cmd").read_text(encoding="utf-8")
+        self.assertIn("-WindowStyle Hidden", background)
+        self.assertNotIn("pause", background.lower())
+        self.assertNotIn("pause", stop.lower())
+        for name in (
+            "start-server-background.ps1",
+            "check-server-health.ps1",
+            "install-login-autostart.ps1",
+            "uninstall-login-autostart.ps1",
+        ):
+            self.assertTrue((service_dir / name).is_file(), name)
+
+    def test_macos_background_service_scripts_are_complete(self) -> None:
+        service_dir = ROOT / "mac" / "codex_status_server"
+        background = (service_dir / "start-background.command").read_text(encoding="utf-8")
+        stop = (service_dir / "stop.command").read_text(encoding="utf-8")
+        self.assertIn("/health", background)
+        self.assertIn("codex-traffic-light-status", background)
+        self.assertIn("status-server.pid", stop)
+        for name in (
+            "start-lan-background.command",
+            "health-check.command",
+            "install-login-autostart.command",
+            "uninstall-login-autostart.command",
+        ):
+            self.assertTrue((service_dir / name).is_file(), name)
+
     def test_task_card_and_dynamic_credits_are_present(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         for section in (

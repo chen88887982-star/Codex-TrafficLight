@@ -397,7 +397,7 @@ STATUS_ACCESS_TOKEN=你的令牌
 EXPOSE_TASK_DETAILS=0
 ```
 
-只要配置了 `STATUS_ACCESS_TOKEN`，所有接口都会拒绝没有正确令牌的请求。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
+配置 `STATUS_ACCESS_TOKEN` 后，局域网请求必须提供正确令牌；本机回环请求继续允许 Rainmeter 和健康检查直接访问。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
 
 ## 可调运行参数
 
@@ -468,3 +468,29 @@ python -m unittest discover -s tests -v
 ```
 
 Rainmeter 的 `.ini` 和 `.inc` 必须保持 UTF-16LE with BOM。提交前还应检查两端 Python 语法、Rainmeter 编码和 `git diff --check`。
+
+## Windows 8765 隐藏后台服务
+
+Windows 上以 `win\codex_status_server` 为唯一状态服务目录。`start-server-background.cmd` 会先检查 `http://127.0.0.1:8765/health`，确认相同服务已运行时直接退出；端口被其他程序占用时会报错，不会重复启动。服务进程使用隐藏窗口运行。
+
+- 本机后台启动：`win\codex_status_server\start-server-background.cmd`
+- 局域网后台启动：`win\codex_status_server\start-server-lan-background.cmd`
+- 健康检查：`win\codex_status_server\check-server-health.cmd`
+- 停止：`win\codex_status_server\stop-server.cmd`
+- 安装登录自启动：`win\codex_status_server\install-login-autostart.cmd`
+- 取消登录自启动：`win\codex_status_server\uninstall-login-autostart.cmd`
+
+配置访问令牌后，本机回环地址仍可供 Rainmeter 直接读取；局域网客户端必须继续携带正确令牌。
+
+## macOS 8765 后台服务
+
+macOS 保留原有前台 `start.command` / `start-lan.command`，并提供与 Windows 对齐的后台管理入口：
+
+- 本机后台启动并防止重复实例：`mac/codex_status_server/start-background.command`
+- 局域网后台启动：`mac/codex_status_server/start-lan-background.command`
+- 健康检查：`mac/codex_status_server/health-check.command`
+- 按 PID 和命令行安全停止：`mac/codex_status_server/stop.command`
+- 安装登录自启动：`mac/codex_status_server/install-login-autostart.command`
+- 取消登录自启动：`mac/codex_status_server/uninstall-login-autostart.command`
+
+登录自启动使用当前用户的 LaunchAgent `com.codex.trafficlight.status`。后台入口先验证 `/health` 的服务身份；相同服务已运行时直接复用，其他程序占用端口时拒绝启动。

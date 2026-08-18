@@ -1,4 +1,4 @@
 @echo off
 setlocal
-set "HOST=0.0.0.0"
-call "%~dp0start-server-background.cmd"
+powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0start-server-background.ps1" -HostName 0.0.0.0
+exit /b %errorlevel%

@@ -101,3 +101,18 @@ cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 - `error`
 
 服务只读取 `status.json`，不会执行远程命令。
+
+## 后台运行、健康检查与登录自启动
+
+以下脚本与原有前台启动方式并存：
+
+```text
+./start-background.command
+./start-lan-background.command
+./health-check.command
+./stop.command
+./install-login-autostart.command
+./uninstall-login-autostart.command
+```
+
+`start-background.command` 默认监听 `127.0.0.1:8765`；`start-lan-background.command` 才监听 `0.0.0.0:8765`，先检查 `/health` 的服务身份，相同服务已运行时不会重复启动。`stop.command` 同时核对 PID 和完整 `server.py` 路径。登录启动使用 `~/Library/LaunchAgents/com.codex.trafficlight.status.plist`；卸载脚本只删除 LaunchAgent，当前服务可另用 `stop.command` 停止。

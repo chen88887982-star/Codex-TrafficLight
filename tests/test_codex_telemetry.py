@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -44,6 +45,7 @@ class CodexTelemetryTests(unittest.TestCase):
     def test_codex_command_uses_path_when_no_override_is_set(self) -> None:
         with (
             patch("codex_status_server.CODEX_COMMAND", ""),
+            patch.dict("codex_status_server.os.environ", {"LOCALAPPDATA": ""}, clear=False),
             patch("codex_status_server.shutil.which", return_value="/opt/codex/bin/codex"),
         ):
             self.assertEqual(resolve_codex_command(), ["/opt/codex/bin/codex"])
@@ -267,7 +269,8 @@ class CodexTelemetryTests(unittest.TestCase):
             baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
             subprocess.run(["git", "mv", "--", old_path.name, "新 名称.txt"], cwd=root, check=True)
             unicode_path.write_text("one\ntwo\n", encoding="utf-8")
-            (root / "制表\t文件.txt").write_text("a\nb\n", encoding="utf-8")
+            tabbed_name = "制表 文件.txt" if os.name == "nt" else "制表\t文件.txt"
+            (root / tabbed_name).write_text("a\nb\n", encoding="utf-8")
 
             tracker = CodexTelemetry(root, git_cache_seconds=0)
             task = tracker.task_for(root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl")

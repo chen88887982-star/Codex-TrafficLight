@@ -113,3 +113,17 @@ http://127.0.0.1:8765/health
 ```
 
 能看到 JSON 就表示 Rainmeter 可以读取。
+
+## 隐藏运行、健康检查与登录自启动
+
+`start-server-background.cmd` 默认监听 `0.0.0.0:8765`，通过隐藏的 PowerShell/Python 进程运行。它先校验 `/health` 的服务身份，再决定复用、启动或拒绝被其他程序占用的端口。
+
+```text
+start-server-background.cmd
+check-server-health.cmd
+stop-server.cmd
+install-login-autostart.cmd
+uninstall-login-autostart.cmd
+```
+
+计划任务名称为 `CodexTrafficLight-Status-8765`，设置为当前用户登录后启动且忽略重复实例。配置令牌时，本机 `127.0.0.1`/`::1` 免令牌，局域网请求必须带令牌。

@@ -1,0 +1,82 @@
+﻿param(
+  [string]$HostName = "127.0.0.1",
+  [int]$Port = 8765,
+  [int]$StartupTimeoutSeconds = 20
+)
+
+$ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+$ServerFile = Join-Path $ScriptDir "server.py"
+$StdoutFile = Join-Path $ScriptDir "status-server-output.log"
+$StderrFile = Join-Path $ScriptDir "status-server-error.log"
+$HealthUri = "http://127.0.0.1:$Port/health"
+$ExpectedService = "codex-traffic-light-status"
+
+function Get-StatusHealth {
+  try {
+    $health = Invoke-RestMethod -Uri $HealthUri -TimeoutSec 2
+    if ($health.service -eq $ExpectedService -and $health.status -in @("ok", "degraded", "error")) {
+      return $health
+    }
+  } catch {
+  }
+  return $null
+}
+
+$health = Get-StatusHealth
+if ($null -ne $health) {
+  Write-Output "[OK] 8765 状态服务已在运行，未重复启动。"
+  exit 0
+}
+
+$occupied = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+if ($null -ne $occupied) {
+  Write-Error "端口 $Port 已被其他程序占用，且未返回预期的状态服务健康信息。"
+  exit 1
+}
+
+$pythonCandidates = @(
+  (Join-Path $ProjectRoot ".venv\Scripts\python.exe"),
+  (Join-Path $env:LocalAppData "Programs\Python\Python314\python.exe"),
+  (Join-Path $env:LocalAppData "Programs\Python\Python313\python.exe"),
+  (Join-Path $env:LocalAppData "Programs\Python\Python312\python.exe")
+)
+$PythonExe = $pythonCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $PythonExe) {
+  $command = Get-Command python -ErrorAction SilentlyContinue
+  if ($command) { $PythonExe = $command.Source }
+}
+if (-not $PythonExe) {
+  Write-Error "未找到可用的 Python。请先恢复项目 .venv 或安装 Python 3。"
+  exit 1
+}
+
+$env:HOST = $HostName
+$env:PORT = [string]$Port
+$process = Start-Process -FilePath $PythonExe -ArgumentList @($ServerFile) -WorkingDirectory $ScriptDir `
+  -WindowStyle Hidden -RedirectStandardOutput $StdoutFile -RedirectStandardError $StderrFile -PassThru
+
+$deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+do {
+  Start-Sleep -Milliseconds 400
+  $health = Get-StatusHealth
+  if ($null -ne $health) {
+    $servicePid = $process.Id
+    try {
+      $pidRecord = Get-Content -LiteralPath (Join-Path $ScriptDir "status-server.pid") -Raw -Encoding UTF8 | ConvertFrom-Json
+      $servicePid = [int]$pidRecord.pid
+    } catch {
+    }
+    Write-Output "[OK] 8765 状态服务已隐藏运行，PID=$servicePid，健康状态=$($health.status)。"
+    exit 0
+  }
+  if ($process.HasExited) {
+    Write-Error "状态服务启动后立即退出（退出码 $($process.ExitCode)）。请检查 $StderrFile。"
+    exit 1
+  }
+} while ((Get-Date) -lt $deadline)
+
+Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+Write-Error "状态服务在 $StartupTimeoutSeconds 秒内未通过健康检查，已停止启动进程。"
+exit 1
