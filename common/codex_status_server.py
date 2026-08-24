@@ -121,6 +121,8 @@ LOG_MAX_BYTES = read_env_int("LOG_MAX_BYTES", 5 * 1024 * 1024, 1024, 1024 * 1024
 LOG_BACKUP_COUNT = read_env_int("LOG_BACKUP_COUNT", 3, 0, 100)
 GIT_CACHE_SECONDS = read_env_float("GIT_CACHE_SECONDS", 2.0, 0.0, 60.0)
 GIT_TIMEOUT_SECONDS = read_env_float("GIT_TIMEOUT_SECONDS", 2.5, 0.1, 30.0)
+GIT_FETCH_INTERVAL_SECONDS = read_env_float("GIT_FETCH_INTERVAL_SECONDS", 300.0, 0.0, 86400.0)
+GIT_FETCH_TIMEOUT_SECONDS = read_env_float("GIT_FETCH_TIMEOUT_SECONDS", 15.0, 1.0, 120.0)
 TASK_STATS_SCOPE = read_env_choice("TASK_STATS_SCOPE", "task", {"turn", "task", "service"})
 GIT_STATS_EXCLUDE = read_env_patterns("GIT_STATS_EXCLUDE", ".DS_Store")
 GIT_INCLUDE_MODE_ONLY = read_env_bool("GIT_INCLUDE_MODE_ONLY", False)
@@ -132,6 +134,8 @@ TELEMETRY = CodexTelemetry(
     CODEX_HOME,
     git_cache_seconds=GIT_CACHE_SECONDS,
     git_timeout_seconds=GIT_TIMEOUT_SECONDS,
+    git_fetch_interval_seconds=GIT_FETCH_INTERVAL_SECONDS,
+    git_fetch_timeout_seconds=GIT_FETCH_TIMEOUT_SECONDS,
     task_stats_scope=TASK_STATS_SCOPE,
     git_exclude_patterns=GIT_STATS_EXCLUDE,
     include_mode_only=GIT_INCLUDE_MODE_ONLY,
@@ -268,6 +272,10 @@ def service_health_snapshot(usage: dict[str, object] | None = None) -> dict[str,
         if level == "ok":
             level = "degraded"
         reasons.append("Git 统计最近失败")
+    if telemetry.get("git_fetch_last_error"):
+        if level == "ok":
+            level = "degraded"
+        reasons.append("Git 云端刷新最近失败")
 
     label = "服务正常" if level == "ok" else f"服务{'异常' if level == 'error' else '降级'} · {reasons[0]}"
     return {

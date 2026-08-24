@@ -405,6 +405,57 @@ class CodexTelemetryTests(unittest.TestCase):
                     time.sleep(0.01)
                 self.assertEqual(tracker.snapshot()["git_branch"], "background")
 
+    def test_background_fetch_detects_remote_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            remote = base / "remote.git"
+            root = base / "work"
+            publisher = base / "publisher"
+            subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+            source = root / "app.py"
+            source.write_text("one\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "baseline"], cwd=root, check=True)
+            subprocess.run(["git", "branch", "-M", "main"], cwd=root, check=True)
+            subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=root, check=True)
+            subprocess.run(["git", "push", "-qu", "origin", "main"], cwd=root, check=True)
+            subprocess.run(["git", "symbolic-ref", "HEAD", "refs/heads/main"], cwd=remote, check=True)
+
+            subprocess.run(["git", "clone", "-q", str(remote), str(publisher)], check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=publisher, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=publisher, check=True)
+            (publisher / "remote.py").write_text("remote\n", encoding="utf-8")
+            subprocess.run(["git", "add", "remote.py"], cwd=publisher, check=True)
+            subprocess.run(["git", "commit", "-qm", "remote change"], cwd=publisher, check=True)
+            subprocess.run(["git", "push", "-q", "origin", "main"], cwd=publisher, check=True)
+
+            tracker = CodexTelemetry(
+                root,
+                git_cache_seconds=60,
+                git_fetch_interval_seconds=300,
+                background_git_statistics=True,
+            )
+            task = tracker.task_for(root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl")
+            task.cwd = str(root)
+            task.git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            task.status = "running"
+            task.updated_at = time.time()
+
+            self.assertFalse(tracker.snapshot()["git_available"])
+            snapshot = {}
+            for _ in range(200):
+                snapshot = tracker.snapshot()
+                if snapshot.get("git_behind") == 1:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(snapshot["git_behind"], 1)
+            self.assertEqual(snapshot["git_state_label"], "跟踪 落后 1")
+            self.assertGreater(tracker.runtime_health()["git_fetch_last_success"], 0)
+            self.assertFalse(tracker._refresh_git_tracking(str(root)))
+
     def test_prune_releases_completed_task_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

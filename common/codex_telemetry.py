@@ -122,6 +122,8 @@ class CodexTelemetry:
         *,
         git_cache_seconds: float = 2.0,
         git_timeout_seconds: float = 2.5,
+        git_fetch_interval_seconds: float = 0.0,
+        git_fetch_timeout_seconds: float = 15.0,
         task_stats_scope: str = "task",
         git_exclude_patterns: Iterable[str] = (),
         include_mode_only: bool = False,
@@ -130,6 +132,8 @@ class CodexTelemetry:
         self.codex_home = codex_home
         self.git_cache_seconds = git_cache_seconds
         self.git_timeout_seconds = git_timeout_seconds
+        self.git_fetch_interval_seconds = max(0.0, git_fetch_interval_seconds)
+        self.git_fetch_timeout_seconds = max(0.1, git_fetch_timeout_seconds)
         self.task_stats_scope = task_stats_scope if task_stats_scope in {"turn", "task", "service"} else "task"
         self.git_exclude_patterns = tuple(pattern.strip() for pattern in git_exclude_patterns if pattern.strip())
         self.include_mode_only = include_mode_only
@@ -139,6 +143,10 @@ class CodexTelemetry:
         self._git_cache: dict[tuple[str, str], tuple[float, dict[str, object]]] = {}
         self._service_git_baselines: dict[str, str] = {}
         self._git_refreshing: set[tuple[str, str]] = set()
+        self._git_fetching: set[str] = set()
+        self._git_fetch_last_attempt: dict[str, float] = {}
+        self._git_fetch_last_success: dict[str, float] = {}
+        self._git_fetch_errors: dict[str, str] = {}
         self._git_generations: dict[str, int] = {}
         self._git_last_finished_at = 0.0
         self._git_last_error = ""
@@ -448,14 +456,27 @@ class CodexTelemetry:
             for cwd in list(self._service_git_baselines):
                 if cwd not in retained_cwds:
                     self._service_git_baselines.pop(cwd, None)
+            for mapping in (
+                self._git_fetch_last_attempt,
+                self._git_fetch_last_success,
+                self._git_fetch_errors,
+            ):
+                for cwd in list(mapping):
+                    if cwd not in retained_cwds:
+                        mapping.pop(cwd, None)
+            self._git_fetching.intersection_update(retained_cwds)
 
     def runtime_health(self) -> dict[str, object]:
         with self._lock:
+            last_fetch_error = list(self._git_fetch_errors.values())[-1] if self._git_fetch_errors else ""
             return {
                 "tracked_tasks": len(self._tasks),
                 "git_refreshing": len(self._git_refreshing),
                 "git_last_finished_at": self._git_last_finished_at,
                 "git_last_error": self._git_last_error,
+                "git_fetching": len(self._git_fetching),
+                "git_fetch_last_success": max(self._git_fetch_last_success.values(), default=0.0),
+                "git_fetch_last_error": last_fetch_error,
             }
 
     def invalidate_git(self, cwd: str) -> None:
@@ -614,6 +635,7 @@ class CodexTelemetry:
 
     def _refresh_git_snapshot(self, task: SessionTask, baseline: str, key: tuple[str, str], generation: int) -> None:
         try:
+            self._refresh_git_tracking(task.cwd)
             result = self._git_stats(task, baseline, use_cache=False, cache_result=False)
         except Exception as exc:
             with self._lock:
@@ -627,6 +649,75 @@ class CodexTelemetry:
         finally:
             with self._lock:
                 self._git_refreshing.discard(key)
+
+    def _refresh_git_tracking(self, cwd: str) -> bool:
+        """Refresh remote-tracking refs at a low frequency without blocking snapshots."""
+        if not cwd or not self.git_fetch_interval_seconds or not Path(cwd).is_dir():
+            return False
+        now = time.monotonic()
+        with self._lock:
+            last_attempt = self._git_fetch_last_attempt.get(cwd)
+            if cwd in self._git_fetching or (
+                last_attempt is not None and now - last_attempt < self.git_fetch_interval_seconds
+            ):
+                return False
+            self._git_fetching.add(cwd)
+            self._git_fetch_last_attempt[cwd] = now
+        try:
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_timeout_seconds,
+                env={**os.environ, "LC_ALL": "C"},
+                check=False,
+            )
+            branch_name = branch.stdout.strip() if branch.returncode == 0 else ""
+            if not branch_name:
+                return False
+            remote = subprocess.run(
+                ["git", "config", "--get", f"branch.{branch_name}.remote"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_timeout_seconds,
+                env={**os.environ, "LC_ALL": "C"},
+                check=False,
+            )
+            remote_name = remote.stdout.strip() if remote.returncode == 0 else ""
+            if not remote_name or remote_name == ".":
+                return False
+            fetched = subprocess.run(
+                ["git", "fetch", "--quiet", remote_name],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_fetch_timeout_seconds,
+                env={**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
+                check=False,
+            )
+            if fetched.returncode != 0:
+                with self._lock:
+                    self._git_fetch_errors[cwd] = f"git fetch exited {fetched.returncode}"
+                return False
+            with self._lock:
+                self._git_fetch_last_success[cwd] = time.time()
+                self._git_fetch_errors.pop(cwd, None)
+            return True
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            with self._lock:
+                self._git_fetch_errors[cwd] = f"{type(exc).__name__}: {exc}"
+            return False
+        finally:
+            with self._lock:
+                self._git_fetching.discard(cwd)
 
     @staticmethod
     def _empty_git_stats(task: SessionTask) -> dict[str, object]:
