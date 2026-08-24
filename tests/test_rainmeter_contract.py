@@ -72,42 +72,59 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertEqual(fields[25], "待推送 1 项 +4 -0")
         self.assertEqual(fields[11:13], ["-1%", "-2%"])
 
-    def test_help_uses_lan_launchers_only_for_remote_computers(self) -> None:
+    def test_help_uses_single_chinese_launcher_per_platform(self) -> None:
         text = HELP_SCRIPT.read_text(encoding="utf-8-sig")
         self.assertIn("本机 Windows 使用", text)
-        self.assertIn("win\\codex_status_server\\start-server.cmd", text)
-        self.assertIn("win\\codex_status_server\\start-server-lan.cmd", text)
-        self.assertIn("./start-lan.command", text)
+        self.assertIn("win\\codex_status_server\\启动状态服务.cmd", text)
+        self.assertIn("win\\codex_status_server\\启动状态服务.cmd lan", text)
+        self.assertIn("./启动状态服务.command", text)
 
-    def test_background_service_scripts_do_not_pause_or_open_persistent_console(self) -> None:
+    def test_windows_exposes_one_launcher_and_keeps_maintenance_internal(self) -> None:
         service_dir = ROOT / "win" / "codex_status_server"
-        background = (service_dir / "start-server-background.cmd").read_text(encoding="utf-8")
-        stop = (service_dir / "stop-server.cmd").read_text(encoding="utf-8")
-        self.assertIn("-WindowStyle Hidden", background)
-        self.assertNotIn("pause", background.lower())
-        self.assertNotIn("pause", stop.lower())
+        internal = service_dir / ".internal"
+        launcher = (service_dir / "启动状态服务.cmd").read_text(encoding="utf-8")
+        self.assertIn("-WindowStyle Hidden", launcher)
+        self.assertIn("attrib +h", launcher)
+        self.assertNotIn("pause", launcher.lower())
+        self.assertEqual([path.name for path in service_dir.glob("*.cmd")], ["启动状态服务.cmd"])
+        self.assertEqual(
+            sorted(path.name for path in service_dir.iterdir() if path.is_file() and not path.name.startswith(".")),
+            ["README.md", "启动状态服务.cmd"],
+        )
         for name in (
             "start-server-background.ps1",
             "check-server-health.ps1",
             "install-login-autostart.ps1",
             "uninstall-login-autostart.ps1",
+            "stop-server.ps1",
+            "set-status.ps1",
+            "server.py",
         ):
-            self.assertTrue((service_dir / name).is_file(), name)
+            self.assertTrue((internal / name).is_file(), name)
 
-    def test_macos_background_service_scripts_are_complete(self) -> None:
+    def test_macos_exposes_one_launcher_and_keeps_maintenance_internal(self) -> None:
         service_dir = ROOT / "mac" / "codex_status_server"
-        background = (service_dir / "start-background.command").read_text(encoding="utf-8")
-        stop = (service_dir / "stop.command").read_text(encoding="utf-8")
+        internal = service_dir / ".internal"
+        launcher = (service_dir / "启动状态服务.command").read_text(encoding="utf-8")
+        background = (internal / "start-background.command").read_text(encoding="utf-8")
+        stop = (internal / "stop.command").read_text(encoding="utf-8")
+        self.assertIn("0.0.0.0", launcher)
         self.assertIn("/health", background)
         self.assertIn("codex-traffic-light-status", background)
         self.assertIn("status-server.pid", stop)
+        self.assertEqual([path.name for path in service_dir.glob("*.command")], ["启动状态服务.command"])
+        self.assertEqual(
+            sorted(path.name for path in service_dir.iterdir() if path.is_file() and not path.name.startswith(".")),
+            ["README.md", "启动状态服务.command"],
+        )
         for name in (
-            "start-lan-background.command",
             "health-check.command",
             "install-login-autostart.command",
             "uninstall-login-autostart.command",
+            "set-status.sh",
+            "server.py",
         ):
-            self.assertTrue((service_dir / name).is_file(), name)
+            self.assertTrue((internal / name).is_file(), name)
 
     def test_default_status_port_is_8767_across_service_and_skin(self) -> None:
         self.assertEqual(DEFAULT_STATUS_PORT, 8767)
@@ -115,8 +132,10 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("StatusUrl=http://127.0.0.1:8767/rainmeter", variables)
         self.assertIn("JsonStatusUrl=http://127.0.0.1:8767/status", variables)
 
-        mac_background = (ROOT / "mac" / "codex_status_server" / "start-background.command").read_text(encoding="utf-8")
-        win_background = (ROOT / "win" / "codex_status_server" / "start-server-background.ps1").read_text(
+        mac_background = (ROOT / "mac" / "codex_status_server" / ".internal" / "start-background.command").read_text(
+            encoding="utf-8"
+        )
+        win_background = (ROOT / "win" / "codex_status_server" / ".internal" / "start-server-background.ps1").read_text(
             encoding="utf-8-sig"
         )
         self.assertIn('PORT="${PORT:-8767}"', mac_background)

@@ -9,7 +9,10 @@
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$StatusFile = Join-Path $ScriptDir "status.json"
+$ServiceDir = Split-Path -Parent $ScriptDir
+$RuntimeDir = Join-Path $ServiceDir ".runtime"
+$StatusFile = Join-Path $RuntimeDir "status.json"
+New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
 
 if ([string]::IsNullOrWhiteSpace($Message)) {
   $Message = switch ($Status) {

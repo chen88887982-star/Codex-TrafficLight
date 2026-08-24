@@ -12,5 +12,6 @@ status-auth.json
 status-server.log
 *.tmp
 **/status-server.pid
+**/.runtime/
 Thumbs.db
 desktop.ini

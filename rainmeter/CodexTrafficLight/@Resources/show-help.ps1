@@ -23,21 +23,20 @@ cd /你的路径/Codex-TrafficLight/mac/codex_status_server
 ls
 
 正常应该能看到：
-server.py
-set-status.sh
-start.command
+README.md
+启动状态服务.command
 
 3. 第一次运行前授权
 终端输入：
-chmod +x set-status.sh start.command start-lan.command
+chmod +x 启动状态服务.command
 
 如果提示 No such file or directory，说明还没有进入 mac/codex_status_server 目录。先重新执行第 1 步的 cd 命令。
 
 4. 启动服务
 启动：
-./start-lan.command
+./启动状态服务.command
 
-终端窗口不要关闭。
+服务会隐藏在后台运行，终端窗口可以关闭。
 
 5. 先在 Mac 本机验证
 终端输入：
@@ -76,9 +75,9 @@ Codex 和 Rainmeter 在同一台 Windows：
 1. 打开项目文件夹 Codex-TrafficLight。
 
 2. 双击启动：
-win\codex_status_server\start-server.cmd
+win\codex_status_server\启动状态服务.cmd
 
-3. 黑色命令窗口不要关闭，窗口开着代表服务正在运行。
+3. 服务会隐藏在后台运行，重复双击不会启动第二个实例。
 
 4. Rainmeter 设置地址填：
 http://127.0.0.1:8767/rainmeter
@@ -91,8 +90,8 @@ Codex 在 A 电脑，Rainmeter 在 B 电脑：
 
 1. 在 A 电脑打开项目文件夹 Codex-TrafficLight。
 
-2. 在 A 电脑双击启动：
-win\codex_status_server\start-server-lan.cmd
+2. 在 A 电脑打开命令提示符并启动：
+win\codex_status_server\启动状态服务.cmd lan
 
 3. 在 A 电脑查看 IP：
 打开 cmd，输入 ipconfig
@@ -108,8 +107,7 @@ http://192.168.2.112:8767/rainmeter
 如果跨电脑打不开，检查：
 1. 两台电脑是否在同一局域网。
 2. Windows 防火墙是否允许 Python/状态服务访问专用网络。
-3. Codex 状态服务窗口是否还在运行。
-4. 黑色命令窗口是否进入“选择”暂停状态；如果标题出现“选择”，按 Esc。
+3. 浏览器能否打开状态服务的 /health 地址。
 "@
 }
 

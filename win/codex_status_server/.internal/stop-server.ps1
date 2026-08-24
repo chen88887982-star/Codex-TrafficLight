@@ -1,6 +1,7 @@
 ﻿$ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PidFile = Join-Path $ScriptDir "status-server.pid"
+$ServiceDir = Split-Path -Parent $ScriptDir
+$PidFile = Join-Path (Join-Path $ServiceDir ".runtime") "status-server.pid"
 $ServerFile = Join-Path $ScriptDir "server.py"
 
 if (-not (Test-Path -LiteralPath $PidFile)) {

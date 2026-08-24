@@ -1,6 +1,7 @@
 ﻿param([string]$TaskName = "CodexTrafficLight-Status-8767")
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ServiceDir = Split-Path -Parent $ScriptDir
 $StartScript = Join-Path $ScriptDir "start-server-background.ps1"
 $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$StartScript`" -HostName 127.0.0.1"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments -WorkingDirectory $ScriptDir

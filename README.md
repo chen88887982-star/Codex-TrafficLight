@@ -86,10 +86,10 @@ Codex-TrafficLight
 2. 在这台 Windows 上启动状态服务，双击：
 
 ```text
-win\codex_status_server\start-server.cmd
+win\codex_status_server\启动状态服务.cmd
 ```
 
-3. 启动后不要关闭黑色命令窗口。窗口开着，就代表状态服务还在运行。
+3. 服务会隐藏在后台运行；重复双击不会启动第二个实例。
 
 4. Rainmeter 设置页里填：
 
@@ -107,10 +107,10 @@ http://127.0.0.1:8767/status
 
 1. 在运行 Codex 的 A 电脑上打开项目文件夹。
 
-2. 在 A 电脑上启动状态服务，双击：
+2. 在 A 电脑上打开命令提示符，用同一个中文入口增加 `lan` 参数启动：
 
 ```text
-win\codex_status_server\start-server-lan.cmd
+win\codex_status_server\启动状态服务.cmd lan
 ```
 
 3. 在 A 电脑上查看本机 IP。
@@ -168,19 +168,11 @@ macOS: ~/.codex/sessions
 
 旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 
-如果不想保留黑色窗口，可以双击：
+后台启动后可用内部停止脚本结束。服务会记录自己的 PID，停止脚本会核对进程命令行，只结束本项目的状态服务，不会按端口误杀其它程序：
 
 ```text
-win\codex_status_server\start-server-background.cmd
+win\codex_status_server\.internal\stop-server.ps1
 ```
-
-后台启动后用下面这个脚本停止。服务会记录自己的 PID，停止脚本会核对进程命令行，只结束本项目的状态服务，不会按端口误杀其它程序：
-
-```text
-win\codex_status_server\stop-server.cmd
-```
-
-如果使用黑色窗口版，不要在窗口里拖选文字。窗口标题出现“选择”时，Windows 会暂停控制台程序，Rainmeter 就会连接失败；按 `Esc` 可以退出选择状态。
 
 查看剩余额度接口：
 
@@ -203,21 +195,19 @@ http://运行Codex电脑的IP:8767/status
 Windows 状态服务会写日志：
 
 ```text
-win\codex_status_server\status-server.log
+win\codex_status_server\.runtime\status-server.log
 ```
 
 日志只记录启动、停止、异常、认证失败和未知路径，不再记录每秒一次的正常 `/rainmeter` 请求。默认单个日志最大 5 MiB、保留 3 份历史文件；可通过 `LOG_MAX_BYTES` 和 `LOG_BACKUP_COUNT` 调整。如果 Rainmeter 一直显示连接失败，可查看启动或认证错误，再检查 Rainmeter 调试信息和返回内容。
 
-旧的 `server.ps1` 只是保留作备用，不再作为默认启动方式。
-
 切换状态：
 
 ```powershell
-.\win\codex_status_server\set-status.ps1 idle
-.\win\codex_status_server\set-status.ps1 running "Codex 正在执行任务"
-.\win\codex_status_server\set-status.ps1 waiting "等待用户确认"
-.\win\codex_status_server\set-status.ps1 success "任务完成"
-.\win\codex_status_server\set-status.ps1 error "任务失败"
+.\win\codex_status_server\.internal\set-status.ps1 idle
+.\win\codex_status_server\.internal\set-status.ps1 running "Codex 正在执行任务"
+.\win\codex_status_server\.internal\set-status.ps1 waiting "等待用户确认"
+.\win\codex_status_server\.internal\set-status.ps1 success "任务完成"
+.\win\codex_status_server\.internal\set-status.ps1 error "任务失败"
 ```
 
 ## Codex 在 Mac 时
@@ -258,16 +248,13 @@ ls
 
 ```text
 README.md
-server.py
-set-status.sh
-start.command
-status.example.json
+启动状态服务.command
 ```
 
-4. 第一次运行前给脚本执行权限：
+4. 第一次运行前给中文入口执行权限：
 
 ```bash
-chmod +x set-status.sh start.command start-lan.command
+chmod +x 启动状态服务.command
 ```
 
 如果提示 `No such file or directory`，说明你还没有进入 `mac/codex_status_server` 这个目录。先重新执行第 2 步的 `cd ...`。
@@ -275,10 +262,10 @@ chmod +x set-status.sh start.command start-lan.command
 5. 启动服务：
 
 ```bash
-./start-lan.command
+./启动状态服务.command
 ```
 
-终端窗口不要关闭。
+服务会在后台运行，终端窗口可以关闭；重复启动不会产生第二个实例。
 
 6. 先在 Mac 本机验证服务：
 
@@ -343,11 +330,11 @@ cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 然后执行：
 
 ```bash
-./set-status.sh idle
-./set-status.sh running "Codex 正在执行任务"
-./set-status.sh waiting "等待用户确认"
-./set-status.sh success "任务完成"
-./set-status.sh error "任务失败"
+./.internal/set-status.sh idle
+./.internal/set-status.sh running "Codex 正在执行任务"
+./.internal/set-status.sh waiting "等待用户确认"
+./.internal/set-status.sh success "任务完成"
+./.internal/set-status.sh error "任务失败"
 ```
 
 能看到 JSON 后，Rainmeter 就能自动变灯。Windows 和 Mac 需要在同一局域网，或者通过 Tailscale、ZeroTier、VPN 等方式互通。
@@ -422,7 +409,7 @@ EXPOSE_TASK_DETAILS=0
 
 ```bash
 cd mac/codex_status_server
-TASK_STATS_SCOPE=turn GIT_STATS_EXCLUDE='.DS_Store,tmp/*' GIT_INCLUDE_MODE_ONLY=0 ./start.command
+TASK_STATS_SCOPE=turn GIT_STATS_EXCLUDE='.DS_Store,tmp/*' GIT_INCLUDE_MODE_ONLY=0 ./启动状态服务.command
 ```
 
 Rainmeter 的网络刷新间隔只在 `@Resources/variables.inc` 中配置：
@@ -435,11 +422,11 @@ UpdateInterval=1
 
 状态服务只提供只读 `/status`、`/health`、`/usage` 和 `/rainmeter` 接口，不提供远程执行命令能力。完整任务遥测不会包含用户提示词全文或完整工作目录；项目只显示目录名。
 
-默认启动脚本只监听本机 `127.0.0.1`。如果需要让另一台电脑上的 Rainmeter 读取状态，请使用局域网启动脚本：
+Windows 中文入口默认只监听本机 `127.0.0.1`；增加 `lan` 参数后允许局域网读取。macOS 中文入口默认监听局域网，便于 Windows Rainmeter 读取；如只允许 Mac 本机访问，可设置 `CODEX_STATUS_HOST=127.0.0.1`。
 
 ```text
-Windows: win\codex_status_server\start-server-lan.cmd
-macOS: mac/codex_status_server/start-lan.command
+Windows: win\codex_status_server\启动状态服务.cmd lan
+macOS: mac/codex_status_server/启动状态服务.command
 ```
 
 安装皮肤时，如果目标 Rainmeter 目录里已经有 `@Resources\variables.inc`，安装脚本会先备份并保留它，避免覆盖你已调整的地址、颜色、透明度和尺寸；仅会把旧版默认高度 `568` 或 `716` 自动迁移到新版任务卡片需要的 `736`。
@@ -452,8 +439,8 @@ macOS: mac/codex_status_server/start-lan.command
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
-python -m ruff check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
-python -m ruff format --check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
+python -m ruff check common tests mac/codex_status_server/.internal/server.py win/codex_status_server/.internal/server.py
+python -m ruff format --check common tests mac/codex_status_server/.internal/server.py win/codex_status_server/.internal/server.py
 PYTHONPATH=common python -m unittest discover -s tests -v
 ```
 
@@ -463,8 +450,8 @@ Windows PowerShell：
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements-dev.txt
-python -m ruff check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
-python -m ruff format --check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
+python -m ruff check common tests mac/codex_status_server/.internal/server.py win/codex_status_server/.internal/server.py
+python -m ruff format --check common tests mac/codex_status_server/.internal/server.py win/codex_status_server/.internal/server.py
 $env:PYTHONPATH = "common"
 python -m unittest discover -s tests -v
 ```
@@ -473,26 +460,12 @@ Rainmeter 的 `.ini` 和 `.inc` 必须保持 UTF-16LE with BOM。提交前还应
 
 ## Windows 8767 隐藏后台服务
 
-Windows 上以 `win\codex_status_server` 为唯一状态服务目录。`start-server-background.cmd` 会先检查 `http://127.0.0.1:8767/health`，确认相同服务已运行时直接退出；端口被其他程序占用时会报错，不会重复启动。服务进程使用隐藏窗口运行。
-
-- 本机后台启动：`win\codex_status_server\start-server-background.cmd`
-- 局域网后台启动：`win\codex_status_server\start-server-lan-background.cmd`
-- 健康检查：`win\codex_status_server\check-server-health.cmd`
-- 停止：`win\codex_status_server\stop-server.cmd`
-- 安装登录自启动：`win\codex_status_server\install-login-autostart.cmd`
-- 取消登录自启动：`win\codex_status_server\uninstall-login-autostart.cmd`
+Windows 根目录只保留一个用户入口：`win\codex_status_server\启动状态服务.cmd`。它会先检查 `http://127.0.0.1:8767/health`，相同服务已运行时直接复用，端口被其他程序占用时拒绝启动。内部维护脚本位于 `.internal`，运行数据位于 `.runtime`。
 
 配置访问令牌后，本机回环地址仍可供 Rainmeter 直接读取；局域网客户端必须继续携带正确令牌。
 
 ## macOS 8767 后台服务
 
-macOS 保留原有前台 `start.command` / `start-lan.command`，并提供与 Windows 对齐的后台管理入口：
-
-- 本机后台启动并防止重复实例：`mac/codex_status_server/start-background.command`
-- 局域网后台启动：`mac/codex_status_server/start-lan-background.command`
-- 健康检查：`mac/codex_status_server/health-check.command`
-- 按 PID 和命令行安全停止：`mac/codex_status_server/stop.command`
-- 安装登录自启动：`mac/codex_status_server/install-login-autostart.command`
-- 取消登录自启动：`mac/codex_status_server/uninstall-login-autostart.command`
+macOS 根目录只保留一个用户入口：`mac/codex_status_server/启动状态服务.command`。它默认以局域网后台模式启动，相同服务已运行时直接复用，端口被其他程序占用时拒绝启动。内部维护脚本位于 `.internal`，运行数据位于 `.runtime`。
 
 登录自启动使用当前用户的 LaunchAgent `com.codex.trafficlight.status`。后台入口先验证 `/health` 的服务身份；相同服务已运行时直接复用，其他程序占用端口时拒绝启动。

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PID_FILE="${SCRIPT_DIR}/status-server.pid"
+SERVICE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PID_FILE="${SERVICE_DIR}/.runtime/status-server.pid"
 SERVER_FILE="${SCRIPT_DIR}/server.py"
 
 if [ ! -f "$PID_FILE" ]; then

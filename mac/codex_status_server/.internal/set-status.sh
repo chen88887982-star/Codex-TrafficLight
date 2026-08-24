@@ -2,7 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STATUS_FILE="$SCRIPT_DIR/status.json"
+SERVICE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+RUNTIME_DIR="${SERVICE_DIR}/.runtime"
+STATUS_FILE="${RUNTIME_DIR}/status.json"
+mkdir -p "$RUNTIME_DIR"
 STATUS="${1:-}"
 MESSAGE="${2:-}"
 

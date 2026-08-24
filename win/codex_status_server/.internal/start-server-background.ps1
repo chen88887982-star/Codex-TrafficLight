@@ -6,12 +6,25 @@
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+$ServiceDir = Split-Path -Parent $ScriptDir
+$ProjectRoot = (Resolve-Path (Join-Path $ServiceDir "..\..")).Path
+$RuntimeDir = Join-Path $ServiceDir ".runtime"
 $ServerFile = Join-Path $ScriptDir "server.py"
-$StdoutFile = Join-Path $ScriptDir "status-server-output.log"
-$StderrFile = Join-Path $ScriptDir "status-server-error.log"
+$StdoutFile = Join-Path $RuntimeDir "status-server-output.log"
+$StderrFile = Join-Path $RuntimeDir "status-server-error.log"
 $HealthUri = "http://127.0.0.1:$Port/health"
 $ExpectedService = "codex-traffic-light-status"
+
+New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
+$runtimeItem = Get-Item -LiteralPath $RuntimeDir
+$runtimeItem.Attributes = $runtimeItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+foreach ($name in @("status.json", "usage-cache.json", "status-server.log", "status-server-output.log", "status-server-error.log", "status-server.pid")) {
+  $legacy = Join-Path $ServiceDir $name
+  $target = Join-Path $RuntimeDir $name
+  if ((Test-Path -LiteralPath $legacy) -and -not (Test-Path -LiteralPath $target)) {
+    Move-Item -LiteralPath $legacy -Destination $target
+  }
+}
 
 function Get-StatusHealth {
   try {
@@ -64,7 +77,7 @@ do {
   if ($null -ne $health) {
     $servicePid = $process.Id
     try {
-      $pidRecord = Get-Content -LiteralPath (Join-Path $ScriptDir "status-server.pid") -Raw -Encoding UTF8 | ConvertFrom-Json
+      $pidRecord = Get-Content -LiteralPath (Join-Path $RuntimeDir "status-server.pid") -Raw -Encoding UTF8 | ConvertFrom-Json
       $servicePid = [int]$pidRecord.pid
     } catch {
     }
