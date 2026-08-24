@@ -145,6 +145,31 @@ class ServiceRuntimeTests(unittest.TestCase):
         self.assertEqual(health["service"], "codex-traffic-light-status")
         self.assertIn("会话监控心跳超时", health["reasons"])
 
+    def test_health_uses_selected_project_git_refresh_state(self) -> None:
+        telemetry = {
+            "tracked_tasks": 2,
+            "git_refreshing": 0,
+            "git_last_finished_at": 0.0,
+            "git_last_error": "",
+            "git_fetching": 0,
+            "git_fetch_last_success": 0.0,
+            "git_fetch_last_error": "另一个项目凭据失败",
+            "git_fetch_unconfirmed": 1,
+        }
+        with (
+            patch("codex_status_server.AUTO_MONITOR", False),
+            patch("codex_status_server.TELEMETRY.runtime_health", return_value=telemetry),
+        ):
+            verified = service_health_snapshot(
+                {"available": False}, {"git_remote_status": "verified", "git_remote_error_label": ""}
+            )
+            unconfirmed = service_health_snapshot(
+                {"available": False}, {"git_remote_status": "unconfirmed", "git_remote_error_label": "网络失败"}
+            )
+        self.assertNotIn("Git 另一个项目凭据失败", verified["reasons"])
+        self.assertIn("Git 网络失败", unconfirmed["reasons"])
+        self.assertEqual(unconfirmed["status"], "degraded")
+
     def test_status_token_is_required_only_for_non_loopback_clients(self) -> None:
         with patch("codex_status_server.STATUS_ACCESS_TOKEN", "secret-token"):
             self.assertTrue(request_authorized("127.0.0.1", {}, ""))

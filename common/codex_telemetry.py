@@ -147,6 +147,9 @@ class CodexTelemetry:
         self._git_fetch_last_attempt: dict[str, float] = {}
         self._git_fetch_last_success: dict[str, float] = {}
         self._git_fetch_errors: dict[str, str] = {}
+        self._git_fetch_failures: dict[str, int] = {}
+        self._git_fetch_next_attempt: dict[str, float] = {}
+        self._git_remote_states: dict[str, dict[str, object]] = {}
         self._git_generations: dict[str, int] = {}
         self._git_last_finished_at = 0.0
         self._git_last_error = ""
@@ -460,6 +463,9 @@ class CodexTelemetry:
                 self._git_fetch_last_attempt,
                 self._git_fetch_last_success,
                 self._git_fetch_errors,
+                self._git_fetch_failures,
+                self._git_fetch_next_attempt,
+                self._git_remote_states,
             ):
                 for cwd in list(mapping):
                     if cwd not in retained_cwds:
@@ -477,6 +483,9 @@ class CodexTelemetry:
                 "git_fetching": len(self._git_fetching),
                 "git_fetch_last_success": max(self._git_fetch_last_success.values(), default=0.0),
                 "git_fetch_last_error": last_fetch_error,
+                "git_fetch_unconfirmed": sum(
+                    state.get("status") in {"different", "unconfirmed"} for state in self._git_remote_states.values()
+                ),
             }
 
     def invalidate_git(self, cwd: str) -> None:
@@ -656,13 +665,13 @@ class CodexTelemetry:
             return False
         now = time.monotonic()
         with self._lock:
-            last_attempt = self._git_fetch_last_attempt.get(cwd)
-            if cwd in self._git_fetching or (
-                last_attempt is not None and now - last_attempt < self.git_fetch_interval_seconds
-            ):
+            next_attempt = self._git_fetch_next_attempt.get(cwd, 0.0)
+            if cwd in self._git_fetching or now < next_attempt:
                 return False
             self._git_fetching.add(cwd)
             self._git_fetch_last_attempt[cwd] = now
+        remote_name = ""
+        merge_ref = ""
         try:
             branch = subprocess.run(
                 ["git", "branch", "--show-current"],
@@ -691,7 +700,22 @@ class CodexTelemetry:
             )
             remote_name = remote.stdout.strip() if remote.returncode == 0 else ""
             if not remote_name or remote_name == ".":
+                with self._lock:
+                    self._git_remote_states[cwd] = {"status": "disabled", "error_label": ""}
+                    self._git_fetch_next_attempt[cwd] = now + self.git_fetch_interval_seconds
                 return False
+            merge = subprocess.run(
+                ["git", "config", "--get", f"branch.{branch_name}.merge"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_timeout_seconds,
+                env={**os.environ, "LC_ALL": "C"},
+                check=False,
+            )
+            merge_ref = merge.stdout.strip() if merge.returncode == 0 else f"refs/heads/{branch_name}"
             fetched = subprocess.run(
                 ["git", "fetch", "--quiet", remote_name],
                 cwd=cwd,
@@ -704,20 +728,136 @@ class CodexTelemetry:
                 check=False,
             )
             if fetched.returncode != 0:
-                with self._lock:
-                    self._git_fetch_errors[cwd] = f"git fetch exited {fetched.returncode}"
+                self._record_git_fetch_failure(
+                    cwd,
+                    now,
+                    self._classify_git_error(fetched.stderr or fetched.stdout),
+                    self._query_remote_tracking_state(cwd, remote_name, merge_ref),
+                )
                 return False
             with self._lock:
                 self._git_fetch_last_success[cwd] = time.time()
                 self._git_fetch_errors.pop(cwd, None)
+                self._git_fetch_failures.pop(cwd, None)
+                self._git_fetch_next_attempt[cwd] = now + self.git_fetch_interval_seconds
+                self._git_remote_states[cwd] = {
+                    "status": "verified",
+                    "checked_at": time.time(),
+                    "error_label": "",
+                    "retry_seconds": int(self.git_fetch_interval_seconds),
+                }
             return True
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            with self._lock:
-                self._git_fetch_errors[cwd] = f"{type(exc).__name__}: {exc}"
+        except subprocess.TimeoutExpired:
+            remote_state = (
+                self._query_remote_tracking_state(cwd, remote_name, merge_ref)
+                if remote_name and merge_ref
+                else {"status": "unconfirmed"}
+            )
+            self._record_git_fetch_failure(cwd, now, "查询超时", remote_state)
+            return False
+        except OSError:
+            remote_state = (
+                self._query_remote_tracking_state(cwd, remote_name, merge_ref)
+                if remote_name and merge_ref
+                else {"status": "unconfirmed"}
+            )
+            self._record_git_fetch_failure(cwd, now, "Git 无法运行", remote_state)
             return False
         finally:
             with self._lock:
                 self._git_fetching.discard(cwd)
+
+    @staticmethod
+    def _classify_git_error(message: str) -> str:
+        value = message.lower()
+        if any(marker in value for marker in ("authentication failed", "could not read username", "permission denied")):
+            return "凭据失败"
+        if any(
+            marker in value for marker in ("cannot lock ref", "index.lock", "fetch_head.lock", "another git process")
+        ):
+            return "仓库锁冲突"
+        if any(marker in value for marker in ("couldn't find remote ref", "remote ref does not exist")):
+            return "远端分支不存在"
+        if any(
+            marker in value
+            for marker in (
+                "could not resolve",
+                "could not connect",
+                "failed to connect",
+                "connection refused",
+                "connection reset",
+                "network is unreachable",
+                "error sending request",
+                "timed out",
+                "rpc failed",
+                "http/2",
+                "tls",
+            )
+        ):
+            return "网络失败"
+        return "Git 刷新失败"
+
+    @staticmethod
+    def _git_retry_delay(failures: int) -> int:
+        schedule = (15, 30, 60, 120, 300)
+        return schedule[min(max(1, failures), len(schedule)) - 1]
+
+    def _record_git_fetch_failure(
+        self, cwd: str, attempted_at: float, error_label: str, remote_state: dict[str, object]
+    ) -> None:
+        with self._lock:
+            failures = self._git_fetch_failures.get(cwd, 0) + 1
+            retry_seconds = self._git_retry_delay(failures)
+            status = str(remote_state.get("status") or "unconfirmed")
+            state = {
+                **remote_state,
+                "status": status,
+                "error_label": "" if status == "verified" else error_label,
+                "retry_seconds": retry_seconds,
+            }
+            self._git_fetch_failures[cwd] = failures
+            self._git_fetch_next_attempt[cwd] = attempted_at + retry_seconds
+            self._git_remote_states[cwd] = state
+            if status == "verified":
+                self._git_fetch_errors.pop(cwd, None)
+            else:
+                self._git_fetch_errors[cwd] = error_label
+
+    def _query_remote_tracking_state(self, cwd: str, remote_name: str, merge_ref: str) -> dict[str, object]:
+        env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+        try:
+            remote = subprocess.run(
+                ["git", "ls-remote", "--heads", remote_name, merge_ref],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_fetch_timeout_seconds,
+                env=env,
+                check=False,
+            )
+            upstream = subprocess.run(
+                ["git", "rev-parse", "@{upstream}"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.git_timeout_seconds,
+                env=env,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {"status": "unconfirmed"}
+        remote_head = remote.stdout.split(maxsplit=1)[0] if remote.returncode == 0 and remote.stdout.strip() else ""
+        upstream_head = upstream.stdout.strip() if upstream.returncode == 0 else ""
+        if not remote_head:
+            return {"status": "unconfirmed"}
+        return {
+            "status": "verified" if remote_head == upstream_head else "different",
+            "checked_at": time.time(),
+        }
 
     @staticmethod
     def _empty_git_stats(task: SessionTask) -> dict[str, object]:
@@ -737,6 +877,10 @@ class CodexTelemetry:
             "git_task_label": "本次 --",
             "git_change_label": "本次 --",
             "git_state_label": "",
+            "git_remote_status": "disabled",
+            "git_remote_error_label": "",
+            "git_remote_retry_seconds": 0,
+            "git_remote_checked_at": 0.0,
             "git_sync_label": "待推送 --",
             "git_cumulative_label": "待推送 --",
         }
@@ -891,14 +1035,25 @@ class CodexTelemetry:
         else:
             change_label = "本次 0 项  +0  -0"
 
-        if ahead and behind:
-            state_label = f"跟踪 分叉 +{ahead}/-{behind}"
+        with self._lock:
+            remote_state = self._git_remote_states.get(task.cwd, {}).copy()
+            fetching = task.cwd in self._git_fetching
+        remote_status = str(remote_state.get("status") or ("checking" if fetching else "disabled"))
+        state_prefix = "云端" if remote_status == "verified" else "跟踪"
+        if remote_status == "different":
+            state_label = "云端 有更新"
+        elif remote_status == "unconfirmed":
+            state_label = "云端 未确认"
+        elif remote_status == "checking":
+            state_label = "云端 检查中"
+        elif ahead and behind:
+            state_label = f"{state_prefix} 分叉 +{ahead}/-{behind}"
         elif ahead:
-            state_label = f"跟踪 领先 {ahead}"
+            state_label = f"{state_prefix} 领先 {ahead}"
         elif behind:
-            state_label = f"跟踪 落后 {behind}"
+            state_label = f"{state_prefix} 落后 {behind}"
         elif upstream_code == 0:
-            state_label = "跟踪 已同步"
+            state_label = f"{state_prefix} 已同步"
         else:
             state_label = "跟踪 未配置"
 
@@ -926,6 +1081,10 @@ class CodexTelemetry:
             "git_task_label": change_label,
             "git_change_label": change_label,
             "git_state_label": state_label,
+            "git_remote_status": remote_status,
+            "git_remote_error_label": str(remote_state.get("error_label") or ""),
+            "git_remote_retry_seconds": int(remote_state.get("retry_seconds") or 0),
+            "git_remote_checked_at": float(remote_state.get("checked_at") or 0.0),
             "git_sync_label": cumulative_label,
             "git_cumulative_label": cumulative_label,
         }
@@ -983,6 +1142,10 @@ class CodexTelemetry:
             "git_task_label": "本次 0 项  +0  -0",
             "git_change_label": "本次 0 项  +0  -0",
             "git_state_label": "",
+            "git_remote_status": "disabled",
+            "git_remote_error_label": "",
+            "git_remote_retry_seconds": 0,
+            "git_remote_checked_at": 0.0,
             "git_sync_label": "待推送 --",
             "git_cumulative_label": "待推送 --",
         }

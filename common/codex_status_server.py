@@ -232,7 +232,9 @@ def effective_status(status_data: dict[str, object], task_data: dict[str, object
     return result
 
 
-def service_health_snapshot(usage: dict[str, object] | None = None) -> dict[str, object]:
+def service_health_snapshot(
+    usage: dict[str, object] | None = None, task_data: dict[str, object] | None = None
+) -> dict[str, object]:
     now = time.time()
     usage = usage or read_usage_cache()
     with health_lock:
@@ -272,10 +274,12 @@ def service_health_snapshot(usage: dict[str, object] | None = None) -> dict[str,
         if level == "ok":
             level = "degraded"
         reasons.append("Git 统计最近失败")
-    if telemetry.get("git_fetch_last_error"):
+    remote_status = str((task_data or {}).get("git_remote_status") or "")
+    remote_error = str((task_data or {}).get("git_remote_error_label") or "")
+    if remote_status in {"different", "unconfirmed"}:
         if level == "ok":
             level = "degraded"
-        reasons.append("Git 云端刷新最近失败")
+        reasons.append(f"Git {remote_error or '云端未确认'}")
 
     label = "服务正常" if level == "ok" else f"服务{'异常' if level == 'error' else '降级'} · {reasons[0]}"
     return {
@@ -1086,7 +1090,7 @@ class StatusHandler(BaseHTTPRequestHandler):
             status_data = read_status()
             usage_data = read_usage_cache()
             task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
-            health = service_health_snapshot(usage_data)
+            health = service_health_snapshot(usage_data, task_data)
             task_data["health_label"] = health["label"]
             status_data = effective_status(status_data, task_data)
             text = build_rainmeter_payload(status_data, usage_data, task_data)
@@ -1101,7 +1105,7 @@ class StatusHandler(BaseHTTPRequestHandler):
 
         if path == "/health":
             task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
-            health = service_health_snapshot()
+            health = service_health_snapshot(task_data=task_data)
             body = json.dumps(
                 {
                     **health,
@@ -1124,7 +1128,7 @@ class StatusHandler(BaseHTTPRequestHandler):
         status_data = effective_status(status_data, task_data)
         status_data["usage"] = public_usage(usage_data)
         status_data["task"] = task_data
-        status_data["health"] = service_health_snapshot(usage_data)
+        status_data["health"] = service_health_snapshot(usage_data, task_data)
         body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_body(200, body, "application/json; charset=utf-8")
 

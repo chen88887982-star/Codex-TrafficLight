@@ -452,9 +452,52 @@ class CodexTelemetryTests(unittest.TestCase):
                     break
                 time.sleep(0.01)
             self.assertEqual(snapshot["git_behind"], 1)
-            self.assertEqual(snapshot["git_state_label"], "跟踪 落后 1")
+            self.assertEqual(snapshot["git_state_label"], "云端 落后 1")
+            self.assertEqual(snapshot["git_remote_status"], "verified")
             self.assertGreater(tracker.runtime_health()["git_fetch_last_success"], 0)
             self.assertFalse(tracker._refresh_git_tracking(str(root)))
+
+            (publisher / "second.py").write_text("second\n", encoding="utf-8")
+            subprocess.run(["git", "add", "second.py"], cwd=publisher, check=True)
+            subprocess.run(["git", "commit", "-qm", "second remote change"], cwd=publisher, check=True)
+            subprocess.run(["git", "push", "-q", "origin", "main"], cwd=publisher, check=True)
+            tracker._git_fetch_next_attempt[str(root)] = 0
+            real_run = subprocess.run
+
+            def fail_fetch(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                if args[:2] == ["git", "fetch"]:
+                    return subprocess.CompletedProcess(args, 128, "", "fatal: Failed to connect to github.com")
+                return real_run(args, **kwargs)
+
+            with patch("codex_telemetry.subprocess.run", side_effect=fail_fetch):
+                self.assertFalse(tracker._refresh_git_tracking(str(root)))
+            stale = tracker._git_stats(task, use_cache=False, cache_result=False)
+            self.assertEqual(stale["git_state_label"], "云端 有更新")
+            self.assertEqual(stale["git_remote_status"], "different")
+            self.assertEqual(stale["git_remote_error_label"], "网络失败")
+            self.assertEqual(stale["git_remote_retry_seconds"], 15)
+            self.assertEqual(tracker.runtime_health()["git_fetch_last_error"], "网络失败")
+            self.assertFalse(tracker._refresh_git_tracking(str(root)))
+
+            tracker._git_fetch_next_attempt[str(root)] = 0
+            self.assertTrue(tracker._refresh_git_tracking(str(root)))
+            recovered = tracker._git_stats(task, use_cache=False, cache_result=False)
+            self.assertEqual(recovered["git_state_label"], "云端 落后 2")
+            self.assertEqual(recovered["git_remote_status"], "verified")
+            self.assertEqual(recovered["git_remote_error_label"], "")
+            self.assertEqual(tracker.runtime_health()["git_fetch_last_error"], "")
+
+    def test_git_fetch_errors_are_safely_classified(self) -> None:
+        cases = {
+            "fatal: Authentication failed": "凭据失败",
+            "fatal: cannot lock ref 'refs/remotes/origin/main'": "仓库锁冲突",
+            "fatal: couldn't find remote ref main": "远端分支不存在",
+            "fatal: unable to access URL: Failed to connect": "网络失败",
+            "fatal: unexpected failure for https://secret.example": "Git 刷新失败",
+        }
+        for message, expected in cases.items():
+            with self.subTest(message=message):
+                self.assertEqual(CodexTelemetry._classify_git_error(message), expected)
 
     def test_prune_releases_completed_task_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
