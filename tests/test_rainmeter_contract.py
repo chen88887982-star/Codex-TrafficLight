@@ -187,6 +187,8 @@ class RainmeterContractTests(unittest.TestCase):
         for name in ("MeterGitState", "MeterGitCumulative"):
             with self.subTest(section=name):
                 self.assertIn("FontColor=#AccentTextColor#", sections[name])
+        self.assertIn("InlineSetting=Color | #LowQuotaTextColor#", sections["MeterGitState"])
+        self.assertIn(r"InlinePattern=^云端 (?:落后|有更新).*$", sections["MeterGitState"])
 
     def test_primary_usage_delta_does_not_overlap_main_value(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
