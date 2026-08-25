@@ -156,24 +156,33 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("[MeterGitCumulative]", text)
         self.assertIn("SkinHeight=736", VARIABLES.read_text(encoding="utf-16"))
 
-    def test_task_card_has_native_icons_and_row_separators(self) -> None:
+    def test_task_card_has_compact_five_row_layout(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
 
         panel = sections["MeterTaskPanel"]
         icons = sections["MeterTaskCardIcons"]
-        self.assertIn("Shape7=Line 12,110,176,110", panel)
-        self.assertIn("Shape8=Line 12,130,176,130", panel)
-        self.assertIn("Shape9=Line 12,151,176,151", panel)
+        self.assertIn("Shape2=Line 12,41,176,41", panel)
+        self.assertIn("Shape7=Line 12,72,176,72", panel)
+        self.assertIn("Shape8=Line 12,103,176,103", panel)
+        self.assertIn("Shape9=Line 12,134,176,134", panel)
         self.assertIn("Shape=Rectangle 2,2,20,20,5", icons)
-        self.assertIn("Shape11=Line 8,83,8,96", icons)
-        self.assertIn("Shape17=Ellipse 8,106,5", icons)
-        self.assertIn("Shape21=Rectangle 4,129,3,8,1", icons)
-        self.assertIn("Shape24=Ellipse 12,151,8", icons)
+        self.assertIn("Shape11=Line 8,42,8,55", icons)
+        self.assertIn("Shape17=Ellipse 8,75,5", icons)
+        self.assertIn("Shape21=Rectangle 4,108,3,8,1", icons)
+        self.assertIn("Shape24=Ellipse 12,140,8", icons)
 
-        for name in ("MeterProject", "MeterGitBranch", "MeterGitState", "MeterTaskTokens", "MeterModel"):
+        for name in ("MeterProject", "MeterGitBranch", "MeterGitState", "MeterTaskTokens", "MeterContext"):
             with self.subTest(section=name):
                 self.assertRegex(sections[name], r"(?m)^X=(?:46|48)$")
+                self.assertNotIn("Hidden=1", sections[name])
+
+        for name in ("MeterActiveTasks", "MeterTaskTitle", "MeterGitChange", "MeterGitCumulative", "MeterModel", "MeterHealth"):
+            with self.subTest(section=name):
+                self.assertIn("Hidden=1", sections[name])
+
+        self.assertIn("Text=[MeasureGitStateCompact]", sections["MeterGitState"])
+        self.assertIn('Substitute="云端 ":"云端","跟踪 ":"云端","":"云端--"', sections["MeasureGitStateCompact"])
 
     def test_update_interval_has_one_configuration_source(self) -> None:
         self.assertNotIn("UpdateInterval=", MAIN_SKIN.read_text(encoding="utf-16"))
@@ -181,21 +190,19 @@ class RainmeterContractTests(unittest.TestCase):
         variable_lines = VARIABLES.read_text(encoding="utf-16").splitlines()
         self.assertEqual([line for line in variable_lines if line.startswith("UpdateInterval=")], ["UpdateInterval=1"])
 
-    def test_parallel_project_has_its_own_full_width_row(self) -> None:
+    def test_parallel_project_row_is_hidden_in_compact_card(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
         parallel = sections["MeterActiveTasks"]
-        self.assertIn("X=22", parallel)
-        self.assertIn("W=164", parallel)
-        self.assertNotIn("StringAlign=Right", parallel)
+        self.assertIn("Hidden=1", parallel)
 
-    def test_right_aligned_task_fields_stay_inside_card(self) -> None:
+    def test_compact_context_is_left_aligned_with_other_rows(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
-        for name in ("MeterGitChange", "MeterContext", "MeterHealth"):
-            with self.subTest(section=name):
-                self.assertIn("X=186", sections[name])
-                self.assertIn("StringAlign=Right", sections[name])
+        context = sections["MeterContext"]
+        self.assertIn("X=46", context)
+        self.assertIn("W=140", context)
+        self.assertNotIn("StringAlign=Right", context)
 
     def test_git_labels_distinguish_task_and_cloud_colors(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
@@ -207,7 +214,7 @@ class RainmeterContractTests(unittest.TestCase):
             with self.subTest(section=name):
                 self.assertIn("FontColor=#AccentTextColor#", sections[name])
         self.assertIn("InlineSetting=Color | #LowQuotaTextColor#", sections["MeterGitState"])
-        self.assertIn(r"InlinePattern=^云端 (?:落后|有更新).*$", sections["MeterGitState"])
+        self.assertIn(r"InlinePattern=^云端(?:落后|有更新).*$", sections["MeterGitState"])
 
     def test_primary_usage_delta_does_not_overlap_main_value(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
