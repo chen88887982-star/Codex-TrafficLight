@@ -1,0 +1,3 @@
+SERVICE_NAME = "codex-traffic-light-status"
+SERVICE_VERSION = "0.3.0"
+RAINMETER_PROTOCOL_VERSION = 1

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import subprocess
@@ -12,6 +11,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
+
+from git_runtime import classify_git_error, git_environment, git_retry_delay
 
 TERMINAL_STATES = {"success", "error"}
 ACTIVE_STATES = {"running", "waiting"}
@@ -438,6 +439,18 @@ class CodexTelemetry:
                     expired = True
         return expired
 
+    def expire_errors(self, hold_seconds: int) -> bool:
+        expired = False
+        cutoff = time.time() - max(0, hold_seconds)
+        with self._lock:
+            for task in self._tasks.values():
+                completed_at = task.completed_at or task.updated_at
+                if task.status == "error" and completed_at and completed_at < cutoff:
+                    task.status = "idle"
+                    task.stage = "Codex 空闲"
+                    expired = True
+        return expired
+
     def active_paths(self) -> set[Path]:
         with self._lock:
             return {task.path for task in self._tasks.values() if task.status in ACTIVE_STATES and not task.ignored}
@@ -597,7 +610,7 @@ class CodexTelemetry:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.git_timeout_seconds,
-                env={**os.environ, "LC_ALL": "C"},
+                env=git_environment(),
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -681,7 +694,7 @@ class CodexTelemetry:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.git_timeout_seconds,
-                env={**os.environ, "LC_ALL": "C"},
+                env=git_environment(),
                 check=False,
             )
             branch_name = branch.stdout.strip() if branch.returncode == 0 else ""
@@ -695,7 +708,7 @@ class CodexTelemetry:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.git_timeout_seconds,
-                env={**os.environ, "LC_ALL": "C"},
+                env=git_environment(),
                 check=False,
             )
             remote_name = remote.stdout.strip() if remote.returncode == 0 else ""
@@ -712,7 +725,7 @@ class CodexTelemetry:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.git_timeout_seconds,
-                env={**os.environ, "LC_ALL": "C"},
+                env=git_environment(),
                 check=False,
             )
             merge_ref = merge.stdout.strip() if merge.returncode == 0 else f"refs/heads/{branch_name}"
@@ -724,7 +737,7 @@ class CodexTelemetry:
                 encoding="utf-8",
                 errors="replace",
                 timeout=self.git_fetch_timeout_seconds,
-                env={**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
+                env=git_environment(network=True),
                 check=False,
             )
             if fetched.returncode != 0:
@@ -769,38 +782,11 @@ class CodexTelemetry:
 
     @staticmethod
     def _classify_git_error(message: str) -> str:
-        value = message.lower()
-        if any(marker in value for marker in ("authentication failed", "could not read username", "permission denied")):
-            return "凭据失败"
-        if any(
-            marker in value for marker in ("cannot lock ref", "index.lock", "fetch_head.lock", "another git process")
-        ):
-            return "仓库锁冲突"
-        if any(marker in value for marker in ("couldn't find remote ref", "remote ref does not exist")):
-            return "远端分支不存在"
-        if any(
-            marker in value
-            for marker in (
-                "could not resolve",
-                "could not connect",
-                "failed to connect",
-                "connection refused",
-                "connection reset",
-                "network is unreachable",
-                "error sending request",
-                "timed out",
-                "rpc failed",
-                "http/2",
-                "tls",
-            )
-        ):
-            return "网络失败"
-        return "Git 刷新失败"
+        return classify_git_error(message)
 
     @staticmethod
     def _git_retry_delay(failures: int) -> int:
-        schedule = (15, 30, 60, 120, 300)
-        return schedule[min(max(1, failures), len(schedule)) - 1]
+        return git_retry_delay(failures)
 
     def _record_git_fetch_failure(
         self, cwd: str, attempted_at: float, error_label: str, remote_state: dict[str, object]
@@ -824,7 +810,7 @@ class CodexTelemetry:
                 self._git_fetch_errors[cwd] = error_label
 
     def _query_remote_tracking_state(self, cwd: str, remote_name: str, merge_ref: str) -> dict[str, object]:
-        env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+        env = git_environment(network=True)
         try:
             remote = subprocess.run(
                 ["git", "ls-remote", "--heads", remote_name, merge_ref],
@@ -915,7 +901,7 @@ class CodexTelemetry:
                     encoding="utf-8",
                     errors="replace",
                     timeout=self.git_timeout_seconds,
-                    env={**os.environ, "LC_ALL": "C"},
+                    env=git_environment(),
                     check=False,
                 )
             except (OSError, subprocess.TimeoutExpired):

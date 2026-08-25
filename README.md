@@ -164,7 +164,7 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。除启动和任务完成刷新外，服务默认每 15 分钟刷新一次额度，设为 `0` 可关闭定时刷新。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程；联网 Git 子进程同时禁用终端提示和 Git Credential Manager 交互。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
 
 旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
 
@@ -184,6 +184,15 @@ http://127.0.0.1:8767/usage
 
 ```text
 http://127.0.0.1:8767/health
+```
+
+
+`/health` 会同时返回 `service_version` 和 `protocol_version`。启动器与一键体检只复用版本、协议和服务身份均匹配的实例，避免新皮肤继续连接未重启的旧后端。
+
+主皮肤任务卡片可以点击展开独立的活动任务面板；对应的固定五行纯文本接口为：
+
+```text
+http://127.0.0.1:8767/tasks
 ```
 
 如果是另一台 Windows 读取，就在另一台电脑浏览器打开：
@@ -386,6 +395,12 @@ EXPOSE_TASK_DETAILS=0
 
 配置 `STATUS_ACCESS_TOKEN` 后，局域网请求必须提供正确令牌；本机回环请求继续允许 Rainmeter 和健康检查直接访问。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
 
+## 可选任务通知
+
+Windows 和 macOS 均支持等待确认、任务完成与异常通知，默认关闭。Windows Rainmeter 设置页的“任务通知设置”会安全更新本项目私有的 `status-auth.json` 并重启服务；默认静音时段为 `22:00-08:00`。也可以使用 `NOTIFICATIONS_ENABLED`、`NOTIFICATION_QUIET_HOURS`、`NOTIFY_WAITING`、`NOTIFY_SUCCESS` 和 `NOTIFY_ERROR` 环境变量配置。
+
+通知按任务轮次和状态去重，不会因为 Rainmeter 每秒刷新而重复弹出。
+
 ## 可调运行参数
 
 状态服务会校验数字、布尔值和枚举参数；无效值不会再导致服务在启动阶段崩溃，而是回退到安全默认值并在终端显示原因。
@@ -402,6 +417,8 @@ EXPOSE_TASK_DETAILS=0
 | `MONITOR_INTERVAL_SECONDS` | `0.25` | Codex 会话日志轮询间隔，允许 `0.05` 到 `60` |
 | `SESSION_DISCOVERY_INTERVAL_SECONDS` | `3` | 递归发现新会话文件的间隔，允许 `0.5` 到 `300`；已发现日志仍按监控间隔读取 |
 | `SUCCESS_HOLD_SECONDS` | `45` | 完成绿灯保持时间，允许 `0` 到 `3600` |
+| `ERROR_HOLD_SECONDS` | `90` | 异常红灯保持时间，之后自动回到空闲，允许 `0` 到 `3600` |
+| `USAGE_REFRESH_INTERVAL_SECONDS` | `900` | 定时刷新额度的间隔秒数，允许 `0` 或 `60` 到 `86400`；`0` 表示关闭 |
 | `RUNNING_STALE_SECONDS` | `300` | 多久没有任务事件后回到空闲，允许 `5` 到 `86400` |
 | `PORT` | `8767` | 状态服务端口，允许 `1` 到 `65535` |
 
@@ -420,7 +437,7 @@ UpdateInterval=1
 
 ## 安全说明
 
-状态服务只提供只读 `/status`、`/health`、`/usage` 和 `/rainmeter` 接口，不提供远程执行命令能力。完整任务遥测不会包含用户提示词全文或完整工作目录；项目只显示目录名。
+状态服务只提供只读 `/status`、`/health`、`/usage`、`/tasks` 和 `/rainmeter` 接口，不提供远程执行命令能力。完整任务遥测不会包含用户提示词全文或完整工作目录；项目只显示目录名。
 
 Windows 中文入口默认只监听本机 `127.0.0.1`；增加 `lan` 参数后允许局域网读取。macOS 中文入口默认监听局域网，便于 Windows Rainmeter 读取；如只允许 Mac 本机访问，可设置 `CODEX_STATUS_HOST=127.0.0.1`。
 
@@ -429,11 +446,11 @@ Windows: win\codex_status_server\启动状态服务.cmd lan
 macOS: mac/codex_status_server/启动状态服务.command
 ```
 
-安装皮肤时，如果目标 Rainmeter 目录里已经有 `@Resources\variables.inc`，安装脚本会先备份并保留它，避免覆盖你已调整的地址、颜色、透明度和尺寸；仅会把旧版默认高度 `568` 或 `716` 自动迁移到新版任务卡片需要的 `736`。
+安装皮肤时，如果目标 Rainmeter 目录里已经有 `@Resources\variables.inc`，安装脚本会先备份并保留它，避免覆盖你已调整的地址、颜色、透明度和尺寸；会迁移旧版默认高度，并且只把旧的本机 `127.0.0.1:8765` 默认地址升级到 8767，自定义远程地址和端口保持不变。安装器还会写入 `ServiceRoot`，供设置页一键体检和通知设置定位本项目。
 
 ## 开发与测试
 
-项目运行只依赖 Python 标准库。建议使用项目内环境：
+项目运行只依赖 Python 标准库。Git 环境、桌面通知和服务版本元数据已经分别拆分到 `common/git_runtime.py`、`common/notifications.py` 和 `common/service_metadata.py`，后续继续按此边界拆分额度与 HTTP 层。建议使用项目内环境：
 
 ```bash
 python3 -m venv .venv
@@ -461,6 +478,8 @@ Rainmeter 的 `.ini` 和 `.inc` 必须保持 UTF-16LE with BOM。提交前还应
 ## Windows 8767 隐藏后台服务
 
 Windows 根目录只保留一个用户入口：`win\codex_status_server\启动状态服务.cmd`。它会先检查 `http://127.0.0.1:8767/health`，相同服务已运行时直接复用，端口被其他程序占用时拒绝启动。内部维护脚本位于 `.internal`，运行数据位于 `.runtime`。
+
+设置页“体检并修复服务”会验证 8765/8767 监听进程身份、服务版本、协议版本、已安装 Rainmeter 地址和旧运行文件。只有命令行确认属于当前项目时才会停止旧进程；修复过程会迁移旧运行文件，并清理超过 50 MB 的历史轮转日志。也可在 PowerShell 中运行 `.\win\codex_status_server\.internal\service-doctor.ps1` 仅查看报告，增加 `-Repair` 执行修复。
 
 配置访问令牌后，本机回环地址仍可供 Rainmeter 直接读取；局域网客户端必须继续携带正确令牌。
 

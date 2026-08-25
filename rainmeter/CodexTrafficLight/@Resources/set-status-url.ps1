@@ -32,11 +32,17 @@ if ($null -eq $uri -or -not $uri.IsAbsoluteUri -or $uri.Scheme -notin @("http", 
 }
 
 $builder = [UriBuilder]$uri
+$tasksBuilder = [UriBuilder]$uri
 $normalizedPath = $builder.Path.TrimEnd("/")
 if ($normalizedPath.EndsWith("/rainmeter", [StringComparison]::OrdinalIgnoreCase)) {
   $builder.Path = $normalizedPath.Substring(0, $normalizedPath.Length - "/rainmeter".Length) + "/status"
 }
 $JsonUrl = $builder.Uri.AbsoluteUri
+$tasksPath = $tasksBuilder.Path.TrimEnd("/")
+if ($tasksPath.EndsWith("/rainmeter", [StringComparison]::OrdinalIgnoreCase)) {
+  $tasksBuilder.Path = $tasksPath.Substring(0, $tasksPath.Length - "/rainmeter".Length) + "/tasks"
+}
+$TasksUrl = $tasksBuilder.Uri.AbsoluteUri
 
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
 if ($content -match '(?m)^StatusUrl=.*$') {
@@ -49,6 +55,12 @@ if ($content -match '(?m)^JsonStatusUrl=.*$') {
   $content = [regex]::Replace($content, '(?m)^JsonStatusUrl=.*$', { param($match) "JsonStatusUrl=$JsonUrl" })
 } else {
   $content = $content -replace '(\[Variables\]\s*)', "`$1JsonStatusUrl=$JsonUrl`r`n"
+}
+
+if ($content -match '(?m)^TasksUrl=.*$') {
+  $content = [regex]::Replace($content, '(?m)^TasksUrl=.*$', { param($match) "TasksUrl=$TasksUrl" })
+} else {
+  $content = $content -replace '(\[Variables\]\s*)', "`$1TasksUrl=$TasksUrl`r`n"
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode

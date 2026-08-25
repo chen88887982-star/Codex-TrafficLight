@@ -4,18 +4,19 @@ import re
 import unittest
 from pathlib import Path
 
-from codex_status_server import DEFAULT_STATUS_PORT, build_rainmeter_payload
+from codex_status_server import DEFAULT_STATUS_PORT, build_rainmeter_payload, build_tasks_payload
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "CodexTrafficLight.ini"
 SETTINGS_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "Settings" / "Settings.ini"
 VARIABLES = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "variables.inc"
 HELP_SCRIPT = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "show-help.ps1"
+TASKS_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "Tasks" / "Tasks.ini"
 
 
 class RainmeterContractTests(unittest.TestCase):
     def test_chinese_configs_keep_utf16le_bom(self) -> None:
-        for path in (MAIN_SKIN, SETTINGS_SKIN, VARIABLES):
+        for path in (MAIN_SKIN, SETTINGS_SKIN, VARIABLES, TASKS_SKIN):
             with self.subTest(path=path.name):
                 raw = path.read_bytes()
                 self.assertTrue(raw.startswith(b"\xff\xfe"))
@@ -88,7 +89,13 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertNotIn("pause", launcher.lower())
         self.assertEqual([path.name for path in service_dir.glob("*.cmd")], ["启动状态服务.cmd"])
         self.assertEqual(
-            sorted(path.name for path in service_dir.iterdir() if path.is_file() and not path.name.startswith(".")),
+            sorted(
+                path.name
+                for path in service_dir.iterdir()
+                if path.is_file()
+                and not path.name.startswith(".")
+                and not re.match(r"^(?:status|usage-cache|status-server).*", path.name)
+            ),
             ["README.md", "启动状态服务.cmd"],
         )
         for name in (
@@ -99,8 +106,44 @@ class RainmeterContractTests(unittest.TestCase):
             "stop-server.ps1",
             "set-status.ps1",
             "server.py",
+            "service-doctor.ps1",
         ):
             self.assertTrue((internal / name).is_file(), name)
+
+    def test_upgrade_and_doctor_scripts_cover_legacy_runtime(self) -> None:
+        installer = (ROOT / "install-rainmeter-skin.cmd").read_text(encoding="utf-8")
+        migration = (
+            ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "migrate-installed-variables.ps1"
+        ).read_text(encoding="utf-8-sig")
+        start = (ROOT / "win" / "codex_status_server" / ".internal" / "start-server-background.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        doctor = (ROOT / "win" / "codex_status_server" / ".internal" / "service-doctor.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("migrate-installed-variables.ps1", installer)
+        self.assertIn('-ServiceRoot "%~dp0."', installer)
+        self.assertIn('copy /Y "%USER_VARIABLES%" "%DST%\\@Resources\\variables.inc.backup-%STAMP%"', installer)
+        self.assertIn("127.0.0.1:8765/rainmeter", migration)
+        self.assertIn("status-server\\.log\\.\\d+", start)
+        self.assertIn("status-server-(?:output|error)\\.log", start)
+        self.assertIn("Get-Item -LiteralPath $RuntimeDir -Force", start)
+        self.assertIn("Test-ProjectStatusProcess", doctor)
+        self.assertIn("service_version", doctor)
+        self.assertIn("protocol_version", doctor)
+        self.assertIn('& $StartScript -HostName "127.0.0.1" -Port $ExpectedPort', doctor)
+        self.assertNotIn("if (-not $expectedHealth) {", doctor)
+
+    def test_new_chinese_powershell_scripts_keep_utf8_bom(self) -> None:
+        paths = (
+            ROOT / "win" / "codex_status_server" / ".internal" / "service-doctor.ps1",
+            ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "migrate-installed-variables.ps1",
+            ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "toggle-notifications.ps1",
+            ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "run-service-doctor.ps1",
+        )
+        for path in paths:
+            with self.subTest(path=path.name):
+                self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
 
     def test_macos_exposes_one_launcher_and_keeps_maintenance_internal(self) -> None:
         service_dir = ROOT / "mac" / "codex_status_server"
@@ -114,7 +157,13 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("status-server.pid", stop)
         self.assertEqual([path.name for path in service_dir.glob("*.command")], ["启动状态服务.command"])
         self.assertEqual(
-            sorted(path.name for path in service_dir.iterdir() if path.is_file() and not path.name.startswith(".")),
+            sorted(
+                path.name
+                for path in service_dir.iterdir()
+                if path.is_file()
+                and not path.name.startswith(".")
+                and not re.match(r"^(?:status|usage-cache|status-server).*", path.name)
+            ),
             ["README.md", "启动状态服务.command"],
         )
         for name in (
@@ -126,11 +175,30 @@ class RainmeterContractTests(unittest.TestCase):
         ):
             self.assertTrue((internal / name).is_file(), name)
 
+    def test_expandable_task_skin_and_doctor_are_wired(self) -> None:
+        main = MAIN_SKIN.read_text(encoding="utf-16")
+        tasks = TASKS_SKIN.read_text(encoding="utf-16")
+        variables = VARIABLES.read_text(encoding="utf-16")
+        settings = SETTINGS_SKIN.read_text(encoding="utf-16")
+        self.assertIn('LeftMouseUpAction=[!ToggleConfig "#ROOTCONFIG#\\Tasks" "Tasks.ini"]', main)
+        self.assertIn("TasksUrl=http://127.0.0.1:8767/tasks", variables)
+        self.assertIn("URL=#TasksUrl#", tasks)
+        self.assertIn("StringIndex=21", tasks)
+        expression = next(line[7:] for line in tasks.splitlines() if line.startswith("RegExp="))
+        self.assertIsNotNone(re.compile(expression).fullmatch(build_tasks_payload({"active_tasks": []})))
+        self.assertIn("体检并修复服务", settings)
+        self.assertIn("任务通知设置", settings)
+        self.assertIn("[MeasureServiceVersionParent]", main)
+        self.assertIn("IfMatch=^0\\.3\\.0$", main)
+        self.assertIn("[MeterVersionWarning]", main)
+        self.assertIn("[MeterTaskClickOverlay]", main)
+
     def test_default_status_port_is_8767_across_service_and_skin(self) -> None:
         self.assertEqual(DEFAULT_STATUS_PORT, 8767)
         variables = VARIABLES.read_text(encoding="utf-16")
         self.assertIn("StatusUrl=http://127.0.0.1:8767/rainmeter", variables)
         self.assertIn("JsonStatusUrl=http://127.0.0.1:8767/status", variables)
+        self.assertIn("TasksUrl=http://127.0.0.1:8767/tasks", variables)
 
         mac_background = (ROOT / "mac" / "codex_status_server" / ".internal" / "start-background.command").read_text(
             encoding="utf-8"
@@ -177,7 +245,14 @@ class RainmeterContractTests(unittest.TestCase):
                 self.assertRegex(sections[name], r"(?m)^X=(?:46|48)$")
                 self.assertNotIn("Hidden=1", sections[name])
 
-        for name in ("MeterActiveTasks", "MeterTaskTitle", "MeterGitChange", "MeterGitCumulative", "MeterModel", "MeterHealth"):
+        for name in (
+            "MeterActiveTasks",
+            "MeterTaskTitle",
+            "MeterGitChange",
+            "MeterGitCumulative",
+            "MeterModel",
+            "MeterHealth",
+        ):
             with self.subTest(section=name):
                 self.assertIn("Hidden=1", sections[name])
 

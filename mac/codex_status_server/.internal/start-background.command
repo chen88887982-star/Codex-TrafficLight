@@ -12,16 +12,23 @@ STDOUT_FILE="${RUNTIME_DIR}/status-server-output.log"
 STDERR_FILE="${RUNTIME_DIR}/status-server-error.log"
 
 mkdir -p "$RUNTIME_DIR"
-for filename in status.json usage-cache.json status-server.log status-server-output.log status-server-error.log status-server.pid; do
-  if [ -f "${SERVICE_DIR}/${filename}" ] && [ ! -e "${RUNTIME_DIR}/${filename}" ]; then
-    mv "${SERVICE_DIR}/${filename}" "${RUNTIME_DIR}/${filename}"
+LEGACY_DIR="${RUNTIME_DIR}/legacy-$(date +%Y%m%d-%H%M%S)"
+for legacy in "${SERVICE_DIR}"/status.json "${SERVICE_DIR}"/usage-cache.json "${SERVICE_DIR}"/status-server.log* "${SERVICE_DIR}"/status-server-output.log "${SERVICE_DIR}"/status-server-error.log "${SERVICE_DIR}"/status-server.pid; do
+  [ -f "$legacy" ] || continue
+  filename="$(basename "$legacy")"
+  target="${RUNTIME_DIR}/${filename}"
+  if [ ! -e "$target" ] && [[ ! "$filename" =~ ^status-server\.log\.[0-9]+$ ]]; then
+    mv "$legacy" "$target"
+  else
+    mkdir -p "$LEGACY_DIR"
+    mv "$legacy" "${LEGACY_DIR}/${filename}"
   fi
 done
 
 health_ok() {
   local payload
   payload="$(curl --silent --show-error --fail --max-time 2 "$HEALTH_URL" 2>/dev/null)" || return 1
-  printf '%s' "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("service")=="codex-traffic-light-status" and d.get("status") in {"ok","degraded","error"} else 1)'
+  printf '%s' "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); ok=d.get("service")=="codex-traffic-light-status" and d.get("service_version")=="0.3.0" and d.get("protocol_version")==1 and d.get("status") in {"ok","degraded","error"}; raise SystemExit(0 if ok else 1)'
 }
 
 if health_ok; then

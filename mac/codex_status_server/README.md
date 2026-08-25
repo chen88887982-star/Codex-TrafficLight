@@ -22,6 +22,8 @@ CODEX_STATUS_HOST=127.0.0.1 ./启动状态服务.command
 
 内部实现和维护脚本统一放在隐藏目录 `.internal`；状态、额度缓存、PID 和日志统一放在隐藏目录 `.runtime`。旧版本位于当前目录的运行文件会在首次启动时自动迁移。
 
+启动器会同时验证服务身份、`service_version` 和 `protocol_version`，不会把未重启的旧后端当作当前服务复用。状态服务支持定时额度刷新和可选的 macOS 通知。
+
 维护命令：
 
 ```bash

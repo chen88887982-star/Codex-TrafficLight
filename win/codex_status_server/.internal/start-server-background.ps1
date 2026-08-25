@@ -16,20 +16,42 @@ $HealthUri = "http://127.0.0.1:$Port/health"
 $ExpectedService = "codex-traffic-light-status"
 
 New-Item -ItemType Directory -Path $RuntimeDir -Force | Out-Null
-$runtimeItem = Get-Item -LiteralPath $RuntimeDir
+$runtimeItem = Get-Item -LiteralPath $RuntimeDir -Force
 $runtimeItem.Attributes = $runtimeItem.Attributes -bor [System.IO.FileAttributes]::Hidden
-foreach ($name in @("status.json", "usage-cache.json", "status-server.log", "status-server-output.log", "status-server-error.log", "status-server.pid")) {
-  $legacy = Join-Path $ServiceDir $name
-  $target = Join-Path $RuntimeDir $name
-  if ((Test-Path -LiteralPath $legacy) -and -not (Test-Path -LiteralPath $target)) {
-    Move-Item -LiteralPath $legacy -Destination $target
+
+function Move-LegacyRuntimeFiles {
+  $legacyFiles = @(
+    Get-ChildItem -LiteralPath $ServiceDir -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match "^(status\.json|usage-cache\.json|status-server\.(?:log(?:\.\d+)?|pid)|status-server-(?:output|error)\.log)$" }
+  )
+  if (-not $legacyFiles) { return }
+  $archiveDir = Join-Path $RuntimeDir ("legacy-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+  foreach ($legacy in $legacyFiles) {
+    $target = Join-Path $RuntimeDir $legacy.Name
+    try {
+      if (-not (Test-Path -LiteralPath $target) -and $legacy.Name -notmatch "^status-server\.log\.\d+$") {
+        Move-Item -LiteralPath $legacy.FullName -Destination $target
+        continue
+      }
+      New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
+      Move-Item -LiteralPath $legacy.FullName -Destination (Join-Path $archiveDir $legacy.Name)
+    } catch {
+      Write-Warning "旧运行文件暂未迁移：$($legacy.FullName)；$($_.Exception.Message)"
+    }
   }
 }
+
+Move-LegacyRuntimeFiles
 
 function Get-StatusHealth {
   try {
     $health = Invoke-RestMethod -Uri $HealthUri -TimeoutSec 2
-    if ($health.service -eq $ExpectedService -and $health.status -in @("ok", "degraded", "error")) {
+    if (
+      $health.service -eq $ExpectedService -and
+      $health.service_version -eq "0.3.0" -and
+      [int]$health.protocol_version -eq 1 -and
+      $health.status -in @("ok", "degraded", "error")
+    ) {
       return $health
     }
   } catch {

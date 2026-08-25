@@ -15,6 +15,7 @@ class RotatingTextLog:
         self.max_bytes = max(1024, max_bytes)
         self.backups = max(0, backups)
         self._lock = threading.Lock()
+        self._normalize_backups()
 
     def write(self, line: str) -> None:
         encoded_size = len((line + "\n").encode("utf-8"))
@@ -44,6 +45,26 @@ class RotatingTextLog:
             if source.exists():
                 os.replace(source, destination)
         os.replace(self.path, self.path.with_name(f"{self.path.name}.1"))
+
+    def _normalize_backups(self) -> None:
+        """Remove legacy backups that violate the configured retention contract."""
+
+        prefix = f"{self.path.name}."
+        try:
+            candidates = list(self.path.parent.glob(f"{self.path.name}.*"))
+        except OSError:
+            return
+        for candidate in candidates:
+            suffix = candidate.name.removeprefix(prefix)
+            if not suffix.isdigit():
+                continue
+            try:
+                too_old = int(suffix) > self.backups
+                too_large = candidate.stat().st_size > self.max_bytes
+                if too_old or too_large or self.backups == 0:
+                    candidate.unlink(missing_ok=True)
+            except OSError:
+                continue
 
 
 def atomic_write_json(path: Path, payload: dict[str, object]) -> None:
@@ -196,6 +217,26 @@ class SingleFlightWorker:
                 "last_finished_at": self._last_finished_at,
                 "last_error": self._last_error,
             }
+
+
+class IntervalScheduler:
+    def __init__(self, interval_seconds: float, *, now: float | None = None) -> None:
+        self.interval_seconds = max(0.0, interval_seconds)
+        self.next_at = 0.0
+        self.arm(now=now)
+
+    def arm(self, *, now: float | None = None) -> None:
+        current = time.monotonic() if now is None else now
+        self.next_at = current + self.interval_seconds if self.interval_seconds else 0.0
+
+    def due(self, *, now: float | None = None) -> bool:
+        if not self.interval_seconds:
+            return False
+        current = time.monotonic() if now is None else now
+        if current < self.next_at:
+            return False
+        self.next_at = current + self.interval_seconds
+        return True
 
 
 class TaskRefreshTracker:

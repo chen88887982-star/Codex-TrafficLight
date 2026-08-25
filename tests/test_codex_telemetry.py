@@ -16,6 +16,7 @@ from codex_status_server import (
     read_env_choice,
     read_env_float,
     read_env_int,
+    read_env_interval,
     resolve_codex_command,
     resolve_expose_task_details,
 )
@@ -34,10 +35,17 @@ class CodexTelemetryTests(unittest.TestCase):
     def test_invalid_environment_parameters_fall_back_to_safe_defaults(self) -> None:
         with patch.dict(
             "codex_status_server.os.environ",
-            {"TEST_INT": "0", "TEST_FLOAT": "nan", "TEST_BOOL": "maybe", "TEST_CHOICE": "unknown"},
+            {
+                "TEST_INT": "0",
+                "TEST_FLOAT": "nan",
+                "TEST_BOOL": "maybe",
+                "TEST_CHOICE": "unknown",
+                "TEST_INTERVAL": "5",
+            },
             clear=False,
         ):
             self.assertEqual(read_env_int("TEST_INT", 10, 1, 20), 10)
+            self.assertEqual(read_env_interval("TEST_INTERVAL", 900, 60, 86400), 900)
             self.assertEqual(read_env_float("TEST_FLOAT", 2.5, 0.1, 10), 2.5)
             self.assertTrue(read_env_bool("TEST_BOOL", True))
             self.assertEqual(read_env_choice("TEST_CHOICE", "task", {"task", "turn"}), "task")

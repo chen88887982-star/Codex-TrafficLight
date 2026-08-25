@@ -25,7 +25,10 @@ if str(COMMON_DIR) not in sys.path:
     sys.path.insert(0, str(COMMON_DIR))
 
 from codex_telemetry import CodexTelemetry  # noqa: E402
+from notifications import NotificationManager  # noqa: E402
+from service_metadata import RAINMETER_PROTOCOL_VERSION, SERVICE_NAME, SERVICE_VERSION  # noqa: E402
 from service_runtime import (  # noqa: E402
+    IntervalScheduler,
     JsonlFollower,
     RotatingTextLog,
     SingleFlightWorker,
@@ -60,6 +63,22 @@ def read_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
         print(f"Out-of-range {name}={value}; using {default} ({minimum}..{maximum})", file=sys.stderr)
         return default
     return value
+
+
+def read_env_interval(name: str, default: int, minimum_positive: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except ValueError:
+        print(f"Invalid {name}={raw!r}; using {default}", file=sys.stderr)
+        return default
+    if value == 0 or minimum_positive <= value <= maximum:
+        return value
+    print(
+        f"Out-of-range {name}={value}; using {default} (0 or {minimum_positive}..{maximum})",
+        file=sys.stderr,
+    )
+    return default
 
 
 def read_env_float(name: str, default: float, minimum: float, maximum: float) -> float:
@@ -112,10 +131,12 @@ AUTO_MONITOR = read_env_bool("AUTO_MONITOR_CODEX", True)
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
 SUCCESS_HOLD_SECONDS = read_env_int("SUCCESS_HOLD_SECONDS", 45, 0, 3600)
+ERROR_HOLD_SECONDS = read_env_int("ERROR_HOLD_SECONDS", 90, 0, 3600)
 MONITOR_INTERVAL_SECONDS = read_env_float("MONITOR_INTERVAL_SECONDS", 0.25, 0.05, 60.0)
 SESSION_DISCOVERY_INTERVAL_SECONDS = read_env_float("SESSION_DISCOVERY_INTERVAL_SECONDS", 3.0, 0.5, 300.0)
 RUNNING_STALE_SECONDS = read_env_int("RUNNING_STALE_SECONDS", 300, 5, 86400)
 USAGE_STALE_SECONDS = read_env_int("USAGE_STALE_SECONDS", 900, 30, 86400)
+USAGE_REFRESH_INTERVAL_SECONDS = read_env_interval("USAGE_REFRESH_INTERVAL_SECONDS", 900, 60, 86400)
 ACCOUNT_QUERY_TIMEOUT_SECONDS = read_env_float("ACCOUNT_QUERY_TIMEOUT_SECONDS", 45.0, 1.0, 300.0)
 LOG_MAX_BYTES = read_env_int("LOG_MAX_BYTES", 5 * 1024 * 1024, 1024, 1024 * 1024 * 1024)
 LOG_BACKUP_COUNT = read_env_int("LOG_BACKUP_COUNT", 3, 0, 100)
@@ -130,6 +151,17 @@ CODEX_COMMAND = os.environ.get("CODEX_COMMAND", "").strip()
 STATUS_ACCESS_TOKEN = os.environ.get("STATUS_ACCESS_TOKEN", str(PRIVATE_SETTINGS.get("access_token") or ""))
 ALLOW_CORS = read_env_bool("ALLOW_CORS", bool(PRIVATE_SETTINGS.get("allow_cors")))
 EXPOSE_TASK_DETAILS = resolve_expose_task_details(PRIVATE_SETTINGS, os.environ)
+NOTIFICATIONS_ENABLED = read_env_bool("NOTIFICATIONS_ENABLED", bool(PRIVATE_SETTINGS.get("notifications_enabled")))
+NOTIFICATION_QUIET_HOURS = os.environ.get(
+    "NOTIFICATION_QUIET_HOURS", str(PRIVATE_SETTINGS.get("notification_quiet_hours") or "")
+).strip()
+NOTIFIER = NotificationManager(
+    enabled=NOTIFICATIONS_ENABLED,
+    quiet_hours=NOTIFICATION_QUIET_HOURS,
+    notify_waiting=read_env_bool("NOTIFY_WAITING", True),
+    notify_success=read_env_bool("NOTIFY_SUCCESS", True),
+    notify_error=read_env_bool("NOTIFY_ERROR", True),
+)
 TELEMETRY = CodexTelemetry(
     CODEX_HOME,
     git_cache_seconds=GIT_CACHE_SECONDS,
@@ -284,7 +316,9 @@ def service_health_snapshot(
     label = "服务正常" if level == "ok" else f"服务{'异常' if level == 'error' else '降级'} · {reasons[0]}"
     return {
         "ok": level != "error",
-        "service": "codex-traffic-light-status",
+        "service": SERVICE_NAME,
+        "service_version": SERVICE_VERSION,
+        "protocol_version": RAINMETER_PROTOCOL_VERSION,
         "status": level,
         "label": label,
         "reasons": reasons,
@@ -733,6 +767,23 @@ def build_rainmeter_payload(
     )
 
 
+def build_tasks_payload(task_data: dict[str, object], limit: int = 5) -> str:
+    tasks = task_data.get("active_tasks")
+    tasks = tasks if isinstance(tasks, list) else []
+    fields = [str(len(tasks))]
+    for index in range(limit):
+        task = tasks[index] if index < len(tasks) and isinstance(tasks[index], dict) else {}
+        fields.extend(
+            (
+                clean_field(task.get("project") or ""),
+                clean_field(task.get("task_title") or ""),
+                clean_field(task.get("stage") or ""),
+                clean_field(format_elapsed_seconds(task.get("elapsed_seconds", 0))) if task else "",
+            )
+        )
+    return "|".join(fields)
+
+
 def extract_credits_label(usage: dict[str, object]) -> str:
     """Read an optional credits balance without assuming a fixed experimental schema."""
 
@@ -957,6 +1008,7 @@ def codex_status_monitor() -> None:
     last_success_at = 0.0
     refresh_tracker = TaskRefreshTracker()
     initialized = False
+    usage_scheduler = IntervalScheduler(USAGE_REFRESH_INTERVAL_SECONDS)
     files: list[Path] = []
     next_discovery_at = 0.0
 
@@ -964,6 +1016,8 @@ def codex_status_monitor() -> None:
         update_monitor_health(heartbeat_at=time.time())
         try:
             monotonic_now = time.monotonic()
+            if usage_scheduler.due(now=monotonic_now):
+                usage_refresh_worker.request()
             if monotonic_now >= next_discovery_at:
                 recent = iter_recent_session_files()
                 retained_active = [path for path in TELEMETRY.active_paths() if path.exists()]
@@ -972,6 +1026,8 @@ def codex_status_monitor() -> None:
                 update_monitor_health(last_scan_at=time.time(), tracked_files=len(files))
             if not files:
                 update_monitor_health(initialized=True, tracked_files=0)
+                if not initialized:
+                    usage_refresh_worker.request()
                 initialized = True
                 time.sleep(min(1.0, SESSION_DISCOVERY_INTERVAL_SECONDS))
                 continue
@@ -1031,6 +1087,7 @@ def codex_status_monitor() -> None:
                             last_success_at = time.time()
 
                     if applied_status:
+                        NOTIFIER.notify(applied_status, task.turn_id or task.session_id, task.project)
                         snapshot = TELEMETRY.snapshot()
                         snapshot_status = str(snapshot["status"])
                         if snapshot_status in {"running", "waiting", "error"}:
@@ -1050,6 +1107,8 @@ def codex_status_monitor() -> None:
                 TELEMETRY.expire_completed(SUCCESS_HOLD_SECONDS)
                 write_status("idle", "Codex 空闲")
                 last_success_at = 0.0
+            elif current.get("status") == "error" and TELEMETRY.expire_errors(ERROR_HOLD_SECONDS):
+                write_status("idle", "Codex 空闲")
             elif TELEMETRY.expire_stale(RUNNING_STALE_SECONDS):
                 write_status("idle", "Codex 空闲")
 
@@ -1095,6 +1154,12 @@ class StatusHandler(BaseHTTPRequestHandler):
             status_data = effective_status(status_data, task_data)
             text = build_rainmeter_payload(status_data, usage_data, task_data)
             body = text.encode("utf-8")
+            self.send_body(200, body, "text/plain; charset=utf-8")
+            return
+
+        if path == "/tasks":
+            task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+            body = build_tasks_payload(task_data).encode("utf-8")
             self.send_body(200, body, "text/plain; charset=utf-8")
             return
 
@@ -1174,7 +1239,7 @@ def main() -> int:
         write_log(f"Codex status server failed to start on {HOST}:{PORT}: {exc}")
         return 1
 
-    write_log(f"Codex status server started on {HOST}:{PORT}")
+    write_log(f"Codex status server {SERVICE_VERSION} started on {HOST}:{PORT} (protocol {RAINMETER_PROTOCOL_VERSION})")
     try:
         write_pid_file()
     except OSError as exc:

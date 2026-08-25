@@ -19,6 +19,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements-dev.txt
-      - run: python -m ruff check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
-      - run: python -m ruff format --check common tests mac/codex_status_server/server.py win/codex_status_server/server.py
+      - run: python -m ruff check common tests mac/codex_status_server/.internal/server.py win/codex_status_server/.internal/server.py
+      - run: python -m ruff format --check common tests mac/codex_status_server/.internal/server.py win/codex_status_server/.internal/server.py
       - run: python -m unittest discover -s tests -v
