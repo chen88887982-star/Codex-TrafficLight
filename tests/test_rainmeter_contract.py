@@ -156,6 +156,25 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("[MeterGitCumulative]", text)
         self.assertIn("SkinHeight=736", VARIABLES.read_text(encoding="utf-16"))
 
+    def test_task_card_has_native_icons_and_row_separators(self) -> None:
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
+
+        panel = sections["MeterTaskPanel"]
+        icons = sections["MeterTaskCardIcons"]
+        self.assertIn("Shape7=Line 12,110,176,110", panel)
+        self.assertIn("Shape8=Line 12,130,176,130", panel)
+        self.assertIn("Shape9=Line 12,151,176,151", panel)
+        self.assertIn("Shape=Rectangle 2,2,20,20,5", icons)
+        self.assertIn("Shape11=Line 8,83,8,96", icons)
+        self.assertIn("Shape17=Ellipse 8,106,5", icons)
+        self.assertIn("Shape21=Rectangle 4,129,3,8,1", icons)
+        self.assertIn("Shape24=Ellipse 12,151,8", icons)
+
+        for name in ("MeterProject", "MeterGitBranch", "MeterGitState", "MeterTaskTokens", "MeterModel"):
+            with self.subTest(section=name):
+                self.assertRegex(sections[name], r"(?m)^X=(?:46|48)$")
+
     def test_update_interval_has_one_configuration_source(self) -> None:
         self.assertNotIn("UpdateInterval=", MAIN_SKIN.read_text(encoding="utf-16"))
         self.assertNotIn("UpdateInterval=", SETTINGS_SKIN.read_text(encoding="utf-16"))
