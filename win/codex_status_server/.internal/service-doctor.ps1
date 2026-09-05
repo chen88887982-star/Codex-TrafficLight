@@ -8,8 +8,8 @@ $RuntimeDir = Join-Path $ServiceDir ".runtime"
 $ExpectedPort = 8767
 $LegacyPort = 8765
 $ExpectedService = "codex-traffic-light-status"
-$ExpectedVersion = "0.3.0"
-$ExpectedProtocol = 1
+$ExpectedVersion = "0.4.0"
+$ExpectedProtocol = 2
 $StartScript = Join-Path $ScriptDir "start-server-background.ps1"
 $InstalledVariables = Join-Path $env:USERPROFILE "Documents\Rainmeter\Skins\CodexTrafficLight\@Resources\variables.inc"
 

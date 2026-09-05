@@ -39,3 +39,7 @@ CODEX_STATUS_HOST=127.0.0.1 ./启动状态服务.command
 ./.internal/set-status.sh idle
 ./.internal/set-status.sh running "Codex 正在执行任务"
 ```
+
+## 只读体检
+
+运行 `bash .internal/health-check.command`，会核验版本、协议、端口、进程身份及登录启动配置，并给出日志位置和处理建议。自定义端口通过 `PORT` 指定。异常退出码为 1，不会自动停止任何进程。

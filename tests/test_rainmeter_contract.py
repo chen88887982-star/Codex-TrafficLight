@@ -23,15 +23,15 @@ class RainmeterContractTests(unittest.TestCase):
                 self.assertNotEqual(raw[2:4], b"\xff\xfe")
                 path.read_text(encoding="utf-16")
 
-    def test_rainmeter_protocol_has_26_fields(self) -> None:
+    def test_rainmeter_protocol_has_28_fields(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         expression = next(line[7:] for line in text.splitlines() if line.startswith("RegExp="))
         compiled = re.compile(expression)
-        sample = "|".join(["1"] + [f"field-{index}" for index in range(2, 27)])
+        sample = "|".join(["1"] + [f"field-{index}" for index in range(2, 29)])
         match = compiled.fullmatch(sample)
         self.assertIsNotNone(match)
-        self.assertEqual(compiled.groups, 26)
-        self.assertEqual(match.group(26), "field-26")
+        self.assertEqual(compiled.groups, 28)
+        self.assertEqual(match.group(28), "field-28")
 
     def test_server_payload_matches_skin_protocol(self) -> None:
         status = {
@@ -67,7 +67,7 @@ class RainmeterContractTests(unittest.TestCase):
         }
         payload = build_rainmeter_payload(status, usage, task)
         fields = payload.split("|")
-        self.assertEqual(len(fields), 26)
+        self.assertEqual(len(fields), 28)
         self.assertIn("project|task|并行 another-project · third-project|main", payload)
         self.assertEqual(fields[17], "本次 2 项 +10 -2")
         self.assertEqual(fields[25], "待推送 1 项 +4 -0")
@@ -189,7 +189,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("体检并修复服务", settings)
         self.assertIn("任务通知设置", settings)
         self.assertIn("[MeasureServiceVersionParent]", main)
-        self.assertIn("IfMatch=^0\\.3\\.0$", main)
+        self.assertIn("IfMatch=^0\\.4\\.0$", main)
         self.assertIn("[MeterVersionWarning]", main)
         self.assertIn("[MeterTaskClickOverlay]", main)
 

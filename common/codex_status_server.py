@@ -31,6 +31,7 @@ from service_runtime import (  # noqa: E402
     IntervalScheduler,
     JsonlFollower,
     RotatingTextLog,
+    SessionFileIndex,
     SingleFlightWorker,
     TaskRefreshTracker,
     atomic_write_json,
@@ -130,6 +131,7 @@ PORT = read_env_int("PORT", DEFAULT_STATUS_PORT, 1, 65535)
 AUTO_MONITOR = read_env_bool("AUTO_MONITOR_CODEX", True)
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
 CODEX_SESSIONS_DIR = CODEX_HOME / "sessions"
+SESSION_FILE_INDEX = SessionFileIndex(CODEX_SESSIONS_DIR)
 SUCCESS_HOLD_SECONDS = read_env_int("SUCCESS_HOLD_SECONDS", 45, 0, 3600)
 ERROR_HOLD_SECONDS = read_env_int("ERROR_HOLD_SECONDS", 90, 0, 3600)
 MONITOR_INTERVAL_SECONDS = read_env_float("MONITOR_INTERVAL_SECONDS", 0.25, 0.05, 60.0)
@@ -184,7 +186,7 @@ DEFAULT_STATUS = {
     "task_usage_start_secondary": None,
     "task_usage_end_primary": None,
     "task_usage_end_secondary": None,
-    "task_usage_label": "本次 --",
+    "task_usage_label": "期间账户变化 --",
     "task_usage_primary_label": "",
     "task_usage_secondary_label": "",
 }
@@ -398,18 +400,19 @@ def write_status(status: str, message: str) -> None:
         task_usage_start_secondary = previous.get("task_usage_start_secondary")
         task_usage_end_primary = previous.get("task_usage_end_primary")
         task_usage_end_secondary = previous.get("task_usage_end_secondary")
-        task_usage_label = str(previous.get("task_usage_label") or "本次 --")
+        task_usage_label = str(previous.get("task_usage_label") or "期间账户变化 --")
         task_usage_primary_label = str(previous.get("task_usage_primary_label") or "")
         task_usage_secondary_label = str(previous.get("task_usage_secondary_label") or "")
 
         if status in {"running", "waiting"}:
             if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
+                previous = {key: value for key, value in previous.items() if not key.startswith("usage_baseline_")}
                 running_since = now
                 task_usage_start_primary = None
                 task_usage_start_secondary = None
                 task_usage_end_primary = None
                 task_usage_end_secondary = None
-                task_usage_label = "本次 --"
+                task_usage_label = "期间账户变化 --"
                 task_usage_primary_label = ""
                 task_usage_secondary_label = ""
         elif status == "success":
@@ -422,6 +425,7 @@ def write_status(status: str, message: str) -> None:
                 last_elapsed_seconds = 0
 
         payload = {
+            **{key: value for key, value in previous.items() if key.startswith("usage_baseline_")},
             "status": status,
             "message": message,
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -458,6 +462,7 @@ def read_status() -> dict[str, object]:
         status = "error"
 
     return {
+        **{key: value for key, value in data.items() if key.startswith("usage_baseline_")},
         "status": status,
         "message": str(data.get("message", "")),
         "updated_at": str(data.get("updated_at", "")),
@@ -467,7 +472,7 @@ def read_status() -> dict[str, object]:
         "task_usage_start_secondary": data.get("task_usage_start_secondary"),
         "task_usage_end_primary": data.get("task_usage_end_primary"),
         "task_usage_end_secondary": data.get("task_usage_end_secondary"),
-        "task_usage_label": str(data.get("task_usage_label") or "本次 --"),
+        "task_usage_label": str(data.get("task_usage_label") or "期间账户变化 --"),
         "task_usage_primary_label": str(data.get("task_usage_primary_label") or ""),
         "task_usage_secondary_label": str(data.get("task_usage_secondary_label") or ""),
     }
@@ -490,16 +495,7 @@ def format_elapsed_seconds(seconds: object) -> str:
 
 
 def iter_recent_session_files(limit: int = 20) -> list[Path]:
-    if not CODEX_SESSIONS_DIR.exists():
-        return []
-    candidates: list[tuple[float, Path]] = []
-    for path in CODEX_SESSIONS_DIR.rglob("rollout-*.jsonl"):
-        try:
-            candidates.append((path.stat().st_mtime, path))
-        except FileNotFoundError:
-            continue
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    return [path for _, path in candidates[:limit]]
+    return SESSION_FILE_INDEX.recent(limit)
 
 
 def format_reset_label(epoch_seconds: object, *, always_time: bool = False) -> str:
@@ -614,6 +610,32 @@ def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
         return usage
 
 
+def parse_usage_window(window: object, prefix: str, *, session: bool = False) -> dict[str, object]:
+    window = window if isinstance(window, dict) else {}
+    used = window.get("used_percent" if session else "usedPercent")
+    reset = window.get("resets_at" if session else "resetsAt")
+    minutes = window.get("window_minutes" if session else "windowDurationMins")
+    minutes = epoch_value(minutes)
+    label = "主窗口" if prefix == "primary" else "第二窗口"
+    if minutes and minutes > 0:
+        if minutes % 1440 == 0:
+            label = f"{minutes // 1440}天额度"
+        elif minutes % 60 == 0:
+            label = f"{minutes // 60}小时额度"
+        else:
+            label = f"{minutes}分钟额度"
+    remaining = remaining_value(used)
+    return {
+        f"{prefix}_remaining_percent": f"{remaining}%" if remaining is not None else "",
+        f"{prefix}_remaining_value": remaining,
+        f"{prefix}_used_percent": used_percent_value(used),
+        f"{prefix}_resets_at": format_reset_label(reset) if reset else "",
+        f"{prefix}_resets_at_epoch": epoch_value(reset),
+        f"{prefix}_window_minutes": minutes,
+        f"{prefix}_window_label": label,
+    }
+
+
 def usage_from_session_rate_limits(event: dict[str, object], path: Path) -> dict[str, object] | None:
     payload = event.get("payload", {})
     if event.get("type") != "event_msg" or not isinstance(payload, dict) or payload.get("type") != "token_count":
@@ -652,6 +674,8 @@ def usage_from_session_rate_limits(event: dict[str, object], path: Path) -> dict
         "updated_at": datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds"),
         "source_session": str(path),
         "source": "session_event",
+        **parse_usage_window(primary, "primary", session=True),
+        **parse_usage_window(secondary, "secondary", session=True),
         "credits_available": bool(credits_label),
         "credits_label": credits_label,
     }
@@ -729,7 +753,9 @@ def build_rainmeter_payload(
     model_label = " ".join(
         value for value in (str(task_data.get("model") or ""), str(task_data.get("reasoning_effort") or "")) if value
     )
-    return "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage_primary}|{task_usage_secondary}|{project}|{task_title}|{active_label}|{git_branch}|{git_change}|{git_state}|{token_label}|{context_label}|{health_label}|{credits_available}|{credits_label}|{model_label}|{git_cumulative}".format(
+    return "{code}|{message}|{updated_at}|{primary_remaining}|{primary_reset}|{secondary_remaining}|{secondary_reset}|{task_elapsed}|{primary_value}|{secondary_value}|{sync_label}|{task_usage_primary}|{task_usage_secondary}|{project}|{task_title}|{active_label}|{git_branch}|{git_change}|{git_state}|{token_label}|{context_label}|{health_label}|{credits_available}|{credits_label}|{model_label}|{git_cumulative}|{primary_window}|{secondary_window}".format(
+        primary_window=clean_field(usage_data.get("primary_window_label") or "主窗口"),
+        secondary_window=clean_field(usage_data.get("secondary_window_label") or "第二窗口"),
         code=status_codes.get(str(status_data.get("status", "error")), "4"),
         message=clean_field(
             task_data.get("stage")
@@ -897,23 +923,18 @@ def query_live_account_usage() -> dict[str, object]:
         if process.stdout is not None:
             process.stdout.close()
     snapshots = limits.get("rateLimitsByLimitId")
-    snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else limits.get("rateLimits")
+    snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else None
+    if not isinstance(snapshot, dict):
+        snapshot = limits.get("rateLimits")
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("primary"), dict):
         raise RuntimeError("Codex returned no primary rate limit")
-    primary = snapshot["primary"]
-    remaining = remaining_value(primary.get("usedPercent"))
     credits_label = extract_credits_label(account_usage)
     return {
         **DEFAULT_USAGE,
-        "available": remaining is not None,
+        **parse_usage_window(snapshot.get("primary"), "primary"),
+        **parse_usage_window(snapshot.get("secondary"), "secondary"),
+        "available": remaining_value(snapshot["primary"].get("usedPercent")) is not None,
         "plan_type": str(snapshot.get("planType") or ""),
-        "primary_remaining_percent": f"{remaining}%" if remaining is not None else "--",
-        "primary_remaining_value": remaining,
-        "primary_used_percent": used_percent_value(primary.get("usedPercent")),
-        "primary_resets_at": format_reset_label(primary.get("resetsAt")),
-        "primary_resets_at_epoch": epoch_value(primary.get("resetsAt")),
-        "secondary_remaining_percent": "",
-        "secondary_resets_at": "",
         "credits_available": bool(credits_label),
         "credits_label": credits_label,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -946,10 +967,10 @@ def format_usage_delta(delta: float | None) -> str:
 
 def format_task_usage_label(primary_delta: float | None, secondary_delta: float | None) -> str:
     if primary_delta is None and secondary_delta is None:
-        return "本次 --"
+        return "期间账户变化 --"
     primary = format_usage_delta(primary_delta) or "--"
     secondary = format_usage_delta(secondary_delta) or "--"
-    return f"本次 {primary} / {secondary}"
+    return f"期间账户变化 {primary} / {secondary}"
 
 
 def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
@@ -967,27 +988,32 @@ def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
         if status not in {"running", "waiting", "success"}:
             return
 
-        start_primary = status_data.get("task_usage_start_primary")
-        start_secondary = status_data.get("task_usage_start_secondary")
-        if start_primary is None and primary_used is not None:
-            start_primary = primary_used
-        if start_secondary is None and secondary_used is not None:
-            start_secondary = secondary_used
-
-        primary_delta = None
-        secondary_delta = None
-        if start_primary is not None and primary_used is not None:
-            primary_delta = float(primary_used) - float(start_primary)
-        if start_secondary is not None and secondary_used is not None:
-            secondary_delta = float(secondary_used) - float(start_secondary)
-
-        status_data["task_usage_start_primary"] = start_primary
-        status_data["task_usage_start_secondary"] = start_secondary
-        status_data["task_usage_end_primary"] = primary_used
-        status_data["task_usage_end_secondary"] = secondary_used
-        status_data["task_usage_label"] = format_task_usage_label(primary_delta, secondary_delta)
-        status_data["task_usage_primary_label"] = format_usage_delta(primary_delta)
-        status_data["task_usage_secondary_label"] = format_usage_delta(secondary_delta)
+        deltas: dict[str, float | None] = {}
+        for prefix, used in (("primary", primary_used), ("secondary", secondary_used)):
+            start_key = f"task_usage_start_{prefix}"
+            baseline_key = f"usage_baseline_{prefix}"
+            # Account sources and window resets are not comparable baselines.
+            identity = [
+                usage.get("source"),
+                usage.get(f"{prefix}_resets_at_epoch"),
+                usage.get(f"{prefix}_window_minutes"),
+            ]
+            start = status_data.get(start_key)
+            previous_used = status_data.get(f"task_usage_end_{prefix}")
+            if used is None:
+                deltas[prefix] = None
+                continue
+            reset = status_data.get(baseline_key) != identity or start is None
+            reset = reset or (previous_used is not None and float(used) < float(previous_used))
+            if reset:
+                start = used
+            status_data[start_key] = start
+            status_data[baseline_key] = identity
+            status_data[f"task_usage_end_{prefix}"] = used
+            deltas[prefix] = float(used) - float(start)
+        status_data["task_usage_label"] = format_task_usage_label(deltas["primary"], deltas["secondary"])
+        status_data["task_usage_primary_label"] = format_usage_delta(deltas["primary"])
+        status_data["task_usage_secondary_label"] = format_usage_delta(deltas["secondary"])
         atomic_write_json(STATUS_FILE, status_data)
 
 
@@ -1110,7 +1136,8 @@ def codex_status_monitor() -> None:
             elif current.get("status") == "error" and TELEMETRY.expire_errors(ERROR_HOLD_SECONDS):
                 write_status("idle", "Codex 空闲")
             elif TELEMETRY.expire_stale(RUNNING_STALE_SECONDS):
-                write_status("idle", "Codex 空闲")
+                snapshot = TELEMETRY.snapshot()
+                write_status(str(snapshot["status"]), str(snapshot["stage"]))
 
         except Exception as exc:
             write_log(f"Codex auto monitor error: {exc}")

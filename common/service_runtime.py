@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -257,3 +258,38 @@ class TaskRefreshTracker:
     def prune(self, active_paths: set[Path]) -> None:
         self._pending = {key for key in self._pending if Path(key[0]) in active_paths}
         self._refreshed = {key for key in self._refreshed if Path(key[0]) in active_paths}
+
+
+class SessionFileIndex:
+    """Scan recent date directories frequently; rediscover history at a bounded interval."""
+
+    def __init__(self, root: Path, *, full_scan_seconds: float = 300) -> None:
+        self.root = root
+        self.full_scan_seconds = full_scan_seconds
+        self._next_full_scan = 0.0
+        self._known: set[Path] = set()
+        self._lock = threading.Lock()
+
+    def recent(self, limit: int = 20, *, now: float | None = None) -> list[Path]:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            if now >= self._next_full_scan:
+                candidates = set(self.root.rglob("rollout-*.jsonl"))
+                self._next_full_scan = now + self.full_scan_seconds
+            else:
+                candidates = set(self._known)
+                today = datetime.now()
+                for offset in range(3):
+                    directory = self.root / (today - timedelta(days=offset)).strftime("%Y/%m/%d")
+                    candidates.update(directory.glob("rollout-*.jsonl"))
+                candidates.update(self.root.glob("rollout-*.jsonl"))
+            ranked = []
+            for path in candidates:
+                try:
+                    ranked.append((path.stat().st_mtime, path))
+                except FileNotFoundError:
+                    continue
+            ranked.sort(key=lambda item: (item[0], str(item[1])), reverse=True)
+            # Active paths are independently retained by the monitor.
+            self._known = {path for _, path in ranked[: max(limit, 100)]}
+            return [path for _, path in ranked[:limit]]

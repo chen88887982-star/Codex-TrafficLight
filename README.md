@@ -2,7 +2,7 @@
 
 这个项目是一套通用 Rainmeter 交通灯方案。Rainmeter 固定运行在 Windows 上，Codex 可以运行在同一台 Windows、另一台 Windows，或者一台 Mac。
 
-## 0.2 任务监控面板
+## 0.4 任务监控面板
 
 主皮肤在原交通灯下增加了任务卡片，可以显示：
 
@@ -164,9 +164,9 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的 Codex 周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。除启动和任务完成刷新外，服务默认每 15 分钟刷新一次额度，设为 `0` 可关闭定时刷新。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程；联网 Git 子进程同时禁用终端提示和 Git Credential Manager 交互。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
+服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的两个 Codex 额度窗口，并按窗口时长标注（如 5 小时、7 天）；未提供时长时标为主窗口／第二窗口，不固定假设周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。除启动和任务完成刷新外，服务默认每 15 分钟刷新一次额度，设为 `0` 可关闭定时刷新。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程；联网 Git 子进程同时禁用终端提示和 Git Credential Manager 交互。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
 
-旧版本留下的 `usage-cache.json` 会被忽略。新的缓存只接受来源为 `app_server` 的实时查询结果；查询失败时保留最后一次成功结果，并在皮肤上显示可能滞后。
+缓存接受明确标记来源的实时查询结果与日志快照：优先使用新鲜的 `app_server` 数据；实时查询失败或快照过期时，仅接受时间更新的日志额度作为降级。没有更新数据时保留原缓存，不伪造实时结果。
 
 后台启动后可用内部停止脚本结束。服务会记录自己的 PID，停止脚本会核对进程命令行，只结束本项目的状态服务，不会按端口误杀其它程序：
 
@@ -488,3 +488,13 @@ Windows 根目录只保留一个用户入口：`win\codex_status_server\启动�
 macOS 根目录只保留一个用户入口：`mac/codex_status_server/启动状态服务.command`。它默认以局域网后台模式启动，相同服务已运行时直接复用，端口被其他程序占用时拒绝启动。内部维护脚本位于 `.internal`，运行数据位于 `.runtime`。
 
 登录自启动使用当前用户的 LaunchAgent `com.codex.trafficlight.status`。后台入口先验证 `/health` 的服务身份；相同服务已运行时直接复用，其他程序占用端口时拒绝启动。
+
+## 0.4 准确性与运行维护
+
+- 超过 `RUNNING_STALE_SECONDS`（默认 300 秒）没有事件时，保留运行／等待确认状态，显示“长时间无更新”，不再直接变为空闲。新活动事件恢复原阶段；明确完成或中止事件结束任务。服务重启后恢复的静默任务也采用这一规则。
+- 双额度窗口以返回的 `windowDurationMins` 为准；第二窗口缺失显示 `--`。主额度名称动态显示，第二窗口以紧凑行展示，悬停查看重置时间和来源。解析遵循 [Codex App Server 官方说明](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)。
+- 百分比差值表示“期间账户变化”，可能包含其他任务或设备的消耗，不能归因到单个任务。任务自身 token 保留在任务卡片。窗口重置、使用量回落或来源切换时重建比较基准。
+- 会话发现每次只扫描最近三天目录和最多 100 个索引文件；启动及每 5 分钟补扫全部历史目录。已发现的活动任务单独保留。较老且未被索引的会话恢复，最迟在下一次历史补扫时发现。
+- Mac 只读体检：运行 `bash mac/codex_status_server/.internal/health-check.command`；自定义端口可用 `PORT=端口号 bash ...`。检查端口、服务版本、协议、健康状态、PID 所属进程、登录启动配置，并报告日志位置。体检不自动结束进程；异常时使用本项目停止入口和启动入口处理。
+- CI 增加 macOS，与 Windows、Linux 一起运行 Python 3.10／3.13 测试。Mac 还会在临时项目副本和随机端口上验证实际启动、重复启动、体检及安全停止。
+- 本次升级为服务 0.4.0、协议 2，Rainmeter 文本接口由 26 字段扩为 28 字段（末尾增加两个窗口名称）。升级时重新安装皮肤并重启状态服务，避免混用新旧版本。

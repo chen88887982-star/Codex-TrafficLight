@@ -209,7 +209,7 @@ for line in sys.stdin:
         result = {}
         response = {'id': request_id, 'result': result}
     elif method == 'account/rateLimits/read':
-        response = {'id': request_id, 'result': {'rateLimits': {'planType': 'plus', 'primary': {'usedPercent': 25, 'resetsAt': 1893456000}}}}
+        response = {'id': request_id, 'result': {'rateLimits': {'planType': 'plus', 'primary': {'usedPercent': 25, 'windowDurationMins': 300, 'resetsAt': 1893456000}, 'secondary': {'usedPercent': 40, 'windowDurationMins': 10080, 'resetsAt': 1893556000}}}}
     else:
         response = {'id': request_id, 'error': {'message': 'credits unavailable'}}
     print(json.dumps(response), flush=True)
@@ -222,6 +222,9 @@ for line in sys.stdin:
             usage = query_live_account_usage()
         self.assertTrue(usage["available"])
         self.assertEqual(usage["primary_remaining_value"], 75)
+        self.assertEqual(usage["secondary_remaining_value"], 60)
+        self.assertEqual(usage["primary_window_label"], "5小时额度")
+        self.assertEqual(usage["secondary_window_label"], "7天额度")
         self.assertFalse(usage["credits_available"])
 
     def test_failed_live_query_keeps_last_successful_cache(self) -> None:

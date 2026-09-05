@@ -48,8 +48,8 @@ function Get-StatusHealth {
     $health = Invoke-RestMethod -Uri $HealthUri -TimeoutSec 2
     if (
       $health.service -eq $ExpectedService -and
-      $health.service_version -eq "0.3.0" -and
-      [int]$health.protocol_version -eq 1 -and
+      $health.service_version -eq "0.4.0" -and
+      [int]$health.protocol_version -eq 2 -and
       $health.status -in @("ok", "degraded", "error")
     ) {
       return $health

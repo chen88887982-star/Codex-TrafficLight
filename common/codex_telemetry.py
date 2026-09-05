@@ -108,6 +108,7 @@ class SessionTask:
     patch_added: int = 0
     patch_deleted: int = 0
     ignored: bool = False
+    stale: bool = False
 
     @property
     def project(self) -> str:
@@ -360,7 +361,7 @@ class CodexTelemetry:
                 "session_id": task.session_id,
                 "turn_id": task.turn_id,
                 "status": task.status,
-                "stage": task.stage,
+                "stage": self._display_stage(task),
                 "project": task.project,
                 "task_title": task.turn_title or task.title or task.project,
                 "active_count": len(active),
@@ -422,9 +423,9 @@ class CodexTelemetry:
         with self._lock:
             for task in self._tasks.values():
                 if task.status in ACTIVE_STATES and task.updated_at and task.updated_at < cutoff:
-                    task.status = "idle"
-                    task.stage = "Codex 空闲"
-                    expired = True
+                    if not task.stale:
+                        task.stale = True
+                        expired = True
         return expired
 
     def expire_completed(self, hold_seconds: int) -> bool:
@@ -513,9 +514,16 @@ class CodexTelemetry:
     def _set_active(self, task: SessionTask, status: str, stage: str, event_at: float) -> None:
         if not task.started_at:
             task.started_at = event_at
+        task.stale = False
         task.status = status
         task.stage = stage
         task.updated_at = max(task.updated_at, event_at)
+
+    @staticmethod
+    def _display_stage(task: SessionTask) -> str:
+        if task.stale and task.status in ACTIVE_STATES:
+            return "等待用户确认（长时间无更新）" if task.status == "waiting" else "长时间无更新，任务状态待确认"
+        return task.stage
 
     @staticmethod
     def _task_summary(task: SessionTask) -> dict[str, object]:
@@ -526,7 +534,7 @@ class CodexTelemetry:
             "project": task.project,
             "task_title": task.turn_title or task.title or task.project,
             "status": task.status,
-            "stage": task.stage,
+            "stage": CodexTelemetry._display_stage(task),
             "elapsed_seconds": elapsed,
         }
 
@@ -541,6 +549,7 @@ class CodexTelemetry:
             duration = 0
         if not duration and task.started_at:
             duration = max(0, int(completed_at - task.started_at))
+        task.stale = False
         task.status = status
         task.stage = stage
         task.completed_at = completed_at

@@ -28,7 +28,7 @@ done
 health_ok() {
   local payload
   payload="$(curl --silent --show-error --fail --max-time 2 "$HEALTH_URL" 2>/dev/null)" || return 1
-  printf '%s' "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); ok=d.get("service")=="codex-traffic-light-status" and d.get("service_version")=="0.3.0" and d.get("protocol_version")==1 and d.get("status") in {"ok","degraded","error"}; raise SystemExit(0 if ok else 1)'
+  printf '%s' "$payload" | python3 -c 'import json,sys; d=json.load(sys.stdin); ok=d.get("service")=="codex-traffic-light-status" and d.get("service_version")=="0.4.0" and d.get("protocol_version")==2 and d.get("status") in {"ok","degraded","error"}; raise SystemExit(0 if ok else 1)'
 }
 
 if health_ok; then

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-PORT="${PORT:-8767}"
-PAYLOAD="$(curl --silent --show-error --fail --max-time 3 "http://127.0.0.1:${PORT}/health")"
-printf '%s' "$PAYLOAD" | python3 -m json.tool
-printf '%s' "$PAYLOAD" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if d.get("service")=="codex-traffic-light-status" and d.get("status") != "error" else 1)'
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd "${SERVICE_DIR}/../.." && pwd)"
+PYTHON_BIN="${PROJECT_ROOT}/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
+exec "$PYTHON_BIN" "${PROJECT_ROOT}/common/service_doctor.py" --service-dir "$SERVICE_DIR"
