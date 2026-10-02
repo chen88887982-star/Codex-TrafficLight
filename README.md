@@ -2,6 +2,43 @@
 
 这个项目是一套通用 Rainmeter 交通灯方案。Rainmeter 固定运行在 Windows 上，Codex 可以运行在同一台 Windows、另一台 Windows，或者一台 Mac。
 
+## 0.5 状态看板、任务管理与历史
+
+启动状态服务后，直接用浏览器访问 `http://127.0.0.1:8767/`。同一局域网中的电脑或手机可访问 `http://服务电脑IP:8767/`。Rainmeter 标题点击打开看板，右键菜单可以打开任务历史；原有 `/rainmeter` 28 字段协议仍为版本 2。
+
+- **任务总览**：任务阶段、耗时、本轮 token、上下文、Git 待推送/待拉取和未提交修改，以及监听、监控、额度、Git、版本和运行数据分项状态。
+- **任务管理**：选择关注、固定显示、取消固定、重新核验日志和忽略当前轮。忽略只隐藏本工具监控，真实 Codex 任务继续运行；下一轮自动恢复。选择/固定在当前服务进程有效。重新核验会保留原忽略选择，可用选择关注恢复显示。
+- **额度刷新**：看板可手动刷新并显示查询进度、失败原因和最后更新时间。默认空闲每 15 分钟、忙碌每 2 分钟刷新；成功、异常或中止结束后各仅额外查询一次。`USAGE_REFRESH_INTERVAL_SECONDS=0` 可关闭定时刷新，`USAGE_BUSY_REFRESH_SECONDS=0` 可关闭忙碌加速。百分比差值表示期间账户变化，不能归因到单个任务。
+- **任务历史**：按项目、状态、日期查询与分页，记录任务摘要、每轮 token、耗时及 Git 汇总。SQLite 位于服务 `.runtime/task-history.sqlite3`，默认保留最近 90 天、最多 10000 条已结束任务；活动任务不因保留期限被删除。不会保存提示词全文、原始工具输出或绝对工作目录。历史存储故障不会阻断任务监控。
+- **多电脑聚合**：设备页添加其他已升级到 0.5 的状态服务根地址，可选填写对端令牌。最多 8 台设备，后台并发读取，失败保留快照并明确标为离线；每台设备的任务、账户额度独立展示。远程源只读，在设备卡片打开对端看板后管理其任务偏好。
+
+本机看板可直接操作本工具偏好。局域网操作需在服务机配置 `STATUS_ACCESS_TOKEN` 或私有 `status-auth.json`；在看板输入访问令牌后仅保存在该浏览器标签页的 sessionStorage，使用 Authorization 请求头发送。静态页面可先打开，接口仍执行访问检查；所有偏好操作均为同源 POST，不提供执行命令、结束 Codex 任务或自动 Git 推送能力。设备令牌仅保存在私有 `.runtime/peer-services.json`，不会出现在公开接口。
+
+Rainmeter 断连显示最后成功读取时间，超过默认 10 秒离线阈值后灯光变灰。设置中的尺寸按整体比例缩放；脚本在用户提交配置后刷新皮肤。安装器自动识别当前 Rainmeter SkinPath，也支持：
+
+```cmd
+install-rainmeter-skin.cmd -SkinPath "D:\Rainmeter\Skins"
+install-rainmeter-skin.cmd -SettingsPath "D:\PortableRainmeter\Rainmeter.ini"
+```
+
+Windows 和 macOS 启动参数保存在服务 `.runtime/launch-settings.json`，通知设置和重新启动沿用监听地址、端口。设置页提供独立的“只读体检”和“确认后修复”；远程源的维护需在服务电脑进行。
+
+本轮修复还包括：启动恢复与增量读取共用截止位置；大日志分块恢复；仓库子目录新文件统计；仅远端领先时的待拉取统计；Windows 空格路径；macOS 同端口快速重启；无效运行 JSON 的降级读取；日志额度与实时查询之间的原子缓存比较。
+
+新增接口：
+
+| 方法与路径 | 用途 |
+|---|---|
+| `GET /api/snapshot` | 本机任务、额度、状态、健康分项与刷新进度 |
+| `GET /api/tasks` | 任务列表与关注/固定状态 |
+| `GET /api/history` | `project/status/since/until/limit/offset` 筛选历史 |
+| `GET /api/peers` | 已配置设备及独立连接状态；不返回令牌 |
+| `POST /api/usage/refresh` | 合并后台刷新请求，立即返回进度 |
+| `POST /api/tasks/control` | JSON：`action/session_id/turn_id`，动作 `select/pin/unpin/recheck/ignore/clear_selection` |
+| `POST /api/peers` | JSON：添加 `action=add/name/url/token`，移除 `action=remove/peer_id` |
+
+额度解析与查询、HTTP、运行配置、JSON 校验、历史和设备聚合分别位于 `common/usage_data.py`、`usage_client.py`、`service_http.py`、`service_config.py`、`state_store.py`、`service_state.py`、`service_monitor.py`、`task_history.py` 和 `peer_services.py`。App Server 初始化遵循 [官方握手协议](https://learn.chatgpt.com/docs/app-server#initialization)，查询不创建推理任务。
+
 ## 0.4 任务监控面板
 
 主皮肤在原交通灯下增加了任务卡片，可以显示：
@@ -33,11 +70,7 @@ Rainmeter 只负责读取 `StatusUrl`。所以两套装备通用的关键就是�
 install-rainmeter-skin.cmd
 ```
 
-它会复制皮肤到：
-
-```text
-%USERPROFILE%\Documents\Rainmeter\Skins\CodexTrafficLight
-```
+它会复制皮肤到当前 Rainmeter 配置的 `SkinPath` 下的 `CodexTrafficLight` 目录。未检测到配置时，使用 Windows 的 Documents 已知文件夹，因此兼容 OneDrive 重定向；便携版可传入 `-SettingsPath` 或 `-SkinPath`。
 
 然后打开 Rainmeter 管理器，点击“刷新全部”，加载：
 
@@ -164,7 +197,7 @@ Windows: %USERPROFILE%\.codex\sessions
 macOS: ~/.codex/sessions
 ```
 
-服务默认调用 `codex app-server --stdio`；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的两个 Codex 额度窗口，并按窗口时长标注（如 5 小时、7 天）；未提供时长时标为主窗口／第二窗口，不固定假设周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。除启动和任务完成刷新外，服务默认每 15 分钟刷新一次额度，设为 `0` 可关闭定时刷新。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程；联网 Git 子进程同时禁用终端提示和 Git Credential Manager 交互。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
+服务默认调用 `codex app-server`（默认 stdio 传输）；如 Codex 可执行文件不在 PATH 中，可设置 `CODEX_COMMAND`。皮肤显示 App Server 返回的两个 Codex 额度窗口，并按窗口时长标注（如 5 小时、7 天）；未提供时长时标为主窗口／第二窗口，不固定假设周额度，并在跨日时显示完整重置日期和时间；如果 `account/usage/read` 返回可识别的 Credits 余额，皮肤会自动增加一行，否则保持隐藏。额度查询在独立后台线程执行，同一时间只运行一个查询；重复触发会合并为下一次查询，不会阻塞任务状态监听。除启动和任务成功、异常或中止结束刷新外，服务默认空闲每 15 分钟、忙碌每 2 分钟刷新额度；`USAGE_REFRESH_INTERVAL_SECONDS=0` 关闭定时刷新，`USAGE_BUSY_REFRESH_SECONDS=0` 关闭忙碌加速。Git 统计也在后台生成快照，Rainmeter 请求和任务事件处理不会等待 Git 子进程；联网 Git 子进程同时禁用终端提示和 Git Credential Manager 交互。`ACCOUNT_QUERY_TIMEOUT_SECONDS` 控制整次查询的总超时，Credits 查询失败不会丢弃已经获取到的额度。
 
 缓存接受明确标记来源的实时查询结果与日志快照：优先使用新鲜的 `app_server` 数据；实时查询失败或快照过期时，仅接受时间更新的日志额度作为降级。没有更新数据时保留原缓存，不伪造实时结果。
 
@@ -418,8 +451,9 @@ Windows 和 macOS 均支持等待确认、任务完成与异常通知，默认�
 | `SESSION_DISCOVERY_INTERVAL_SECONDS` | `3` | 递归发现新会话文件的间隔，允许 `0.5` 到 `300`；已发现日志仍按监控间隔读取 |
 | `SUCCESS_HOLD_SECONDS` | `45` | 完成绿灯保持时间，允许 `0` 到 `3600` |
 | `ERROR_HOLD_SECONDS` | `90` | 异常红灯保持时间，之后自动回到空闲，允许 `0` 到 `3600` |
-| `USAGE_REFRESH_INTERVAL_SECONDS` | `900` | 定时刷新额度的间隔秒数，允许 `0` 或 `60` 到 `86400`；`0` 表示关闭 |
-| `RUNNING_STALE_SECONDS` | `300` | 多久没有任务事件后回到空闲，允许 `5` 到 `86400` |
+| `USAGE_REFRESH_INTERVAL_SECONDS` | `900` | 空闲定时刷新额度的间隔秒数，允许 `0` 或 `60` 到 `86400`；`0` 表示关闭全部定时刷新 |
+| `USAGE_BUSY_REFRESH_SECONDS` | `120` | 忙碌期间额度刷新间隔，允许 `0` 或 `30` 到 `86400`；`0` 表示不加速 |
+| `RUNNING_STALE_SECONDS` | `300` | 多久没有事件后标为长时间无更新，保留活动状态，允许 `5` 到 `86400` |
 | `PORT` | `8767` | 状态服务端口，允许 `1` 到 `65535` |
 
 例如，让“本次”只统计当前一轮，同时忽略临时目录和纯权限变化：
@@ -450,7 +484,7 @@ macOS: mac/codex_status_server/启动状态服务.command
 
 ## 开发与测试
 
-项目运行只依赖 Python 标准库。Git 环境、桌面通知和服务版本元数据已经分别拆分到 `common/git_runtime.py`、`common/notifications.py` 和 `common/service_metadata.py`，后续继续按此边界拆分额度与 HTTP 层。建议使用项目内环境：
+项目运行只依赖 Python 标准库。Git 环境、桌面通知和服务版本元数据已经分别拆分到 `common/git_runtime.py`、`common/notifications.py` 和 `common/service_metadata.py`，额度与 HTTP 层已拆分到独立模块。建议使用项目内环境：
 
 ```bash
 python3 -m venv .venv
@@ -496,5 +530,5 @@ macOS 根目录只保留一个用户入口：`mac/codex_status_server/启动状�
 - 百分比差值表示“期间账户变化”，可能包含其他任务或设备的消耗，不能归因到单个任务。任务自身 token 保留在任务卡片。窗口重置、使用量回落或来源切换时重建比较基准。
 - 会话发现每次只扫描最近三天目录和最多 100 个索引文件；启动及每 5 分钟补扫全部历史目录。已发现的活动任务单独保留。较老且未被索引的会话恢复，最迟在下一次历史补扫时发现。
 - Mac 只读体检：运行 `bash mac/codex_status_server/.internal/health-check.command`；自定义端口可用 `PORT=端口号 bash ...`。检查端口、服务版本、协议、健康状态、PID 所属进程、登录启动配置，并报告日志位置。体检不自动结束进程；异常时使用本项目停止入口和启动入口处理。
-- CI 增加 macOS，与 Windows、Linux 一起运行 Python 3.10／3.13 测试。Mac 还会在临时项目副本和随机端口上验证实际启动、重复启动、体检及安全停止。
-- 本次升级为服务 0.4.0、协议 2，Rainmeter 文本接口由 26 字段扩为 28 字段（末尾增加两个窗口名称）。升级时重新安装皮肤并重启状态服务，避免混用新旧版本。
+- CI 增加 macOS，与 Windows、Linux 一起运行 Python 3.10／3.13／3.14 测试。Mac 还会在临时项目副本和随机端口上验证实际启动、重复启动、体检及安全停止。
+- 0.4 版将协议 2 的 Rainmeter 文本接口由 26 字段扩为 28 字段（末尾增加两个窗口名称）；当前 0.5.0 保持这套协议。升级时重新安装皮肤并重启状态服务，避免混用新旧版本。

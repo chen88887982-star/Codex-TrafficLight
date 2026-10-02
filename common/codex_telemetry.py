@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import subprocess
@@ -13,6 +14,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from git_runtime import classify_git_error, git_environment, git_retry_delay
+from service_runtime import JsonlFollower
+from task_history import TaskHistory
 
 TERMINAL_STATES = {"success", "error"}
 ACTIVE_STATES = {"running", "waiting"}
@@ -21,24 +24,40 @@ ACTIVE_STATES = {"running", "waiting"}
 def parse_timestamp(value: object) -> float:
     if value in (None, ""):
         return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except ValueError:
+        timestamp = (
+            float(value)
+            if isinstance(value, (int, float))
+            else datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+        )
+        if not math.isfinite(timestamp):
+            return 0.0
+        datetime.fromtimestamp(timestamp)
+        return timestamp
+    except (TypeError, ValueError, OverflowError, OSError):
         return 0.0
 
 
 def compact_number(value: object) -> str:
     try:
         number = int(value)
-    except (TypeError, ValueError):
+        if not math.isfinite(number):
+            return "--"
+    except (TypeError, ValueError, OverflowError):
         return "--"
     if number >= 1_000_000:
         return f"{number / 1_000_000:.1f}M".rstrip("0").rstrip(".")
     if number >= 1_000:
         return f"{number / 1_000:.1f}K".rstrip("0").rstrip(".")
     return str(number)
+
+
+def safe_counter(value: object, fallback: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return number if 0 <= number <= 2**63 - 1 else fallback
 
 
 def count_unified_diff(unified_diff: object) -> tuple[int, int]:
@@ -78,6 +97,38 @@ def compact_task_title(value: object, limit: int = 72) -> str:
     return title if len(title) <= limit else f"{title[: limit - 1].rstrip()}…"
 
 
+def user_display_title(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    context_prefixes = (
+        "<external_codex_apps_open_page",
+        "<environment_context>",
+        "# agents.md instructions",
+        "<instructions>",
+        "<turn_aborted>",
+        "<system_reminder>",
+    )
+    if text.lower().startswith(context_prefixes):
+        return ""
+    return compact_task_title(text)
+
+
+def response_user_title(payload: dict[str, object]) -> str:
+    content = payload.get("content", [])
+    if isinstance(content, str):
+        return user_display_title(content)
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") in {"input_text", "text"}:
+            title = user_display_title(item.get("text"))
+            if title:
+                parts.append(title)
+    return compact_task_title("\n".join(parts))
+
+
 @dataclass
 class SessionTask:
     path: Path
@@ -109,6 +160,9 @@ class SessionTask:
     patch_deleted: int = 0
     ignored: bool = False
     stale: bool = False
+    dismissed: bool = False
+    turn_total_tokens: int = 0
+    token_baseline: int = 0
 
     @property
     def project(self) -> str:
@@ -130,6 +184,7 @@ class CodexTelemetry:
         git_exclude_patterns: Iterable[str] = (),
         include_mode_only: bool = False,
         background_git_statistics: bool = False,
+        history_path: Path | None = None,
     ) -> None:
         self.codex_home = codex_home
         self.git_cache_seconds = git_cache_seconds
@@ -156,6 +211,13 @@ class CodexTelemetry:
         self._git_last_finished_at = 0.0
         self._git_last_error = ""
         self._lock = threading.RLock()
+        self._selected_session_id = ""
+        self._pinned_session_id = ""
+        self._dismissed_turns: dict[str, str] = {}
+        self.history = TaskHistory(history_path) if history_path is not None else None
+        self._history_git: dict[tuple[str, str], dict[str, object]] = {}
+        self._history_last_error = ""
+        self._history_last_persisted: dict[tuple[str, str], float] = {}
 
     def task_for(self, path: Path) -> SessionTask:
         path = path.resolve()
@@ -173,28 +235,193 @@ class CodexTelemetry:
         with self._lock:
             self.task_for(path).ignored = True
 
-    def rebuild(self, paths: Iterable[Path], *, tail_bytes: int = 2 * 1024 * 1024) -> None:
+    def rebuild(self, paths: Iterable[Path], *, tail_bytes: int = 2 * 1024 * 1024) -> dict[Path, int]:
+        """Replay bounded chunks up to a captured size; return complete-record cursors.
+
+        tail_bytes is retained for compatibility. A fixed tail cannot restore a turn
+        reliably, so lifecycle records are replayed from the beginning instead.
+        """
+        offsets: dict[Path, int] = {}
         for path in paths:
+            path = path.resolve()
             task = self.task_for(path)
             try:
-                with path.open("rb") as fh:
-                    head = fh.readline().decode("utf-8", errors="replace")
-                    size = path.stat().st_size
-                    fh.seek(max(0, size - tail_bytes))
-                    tail = fh.read().decode("utf-8", errors="replace")
+                size = path.stat().st_size
             except OSError:
                 continue
-            lines = tail.splitlines()
-            if size > tail_bytes:
-                lines.insert(0, head)
-            for line in lines:
+            follower = JsonlFollower()
+            while follower.position_for(path) < size:
+                before = follower.position_for(path)
                 try:
-                    event = json.loads(line)
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(event, dict):
-                    self.ingest(event, path, reconstructing=True)
+                    lines = follower.read_lines(path, stop_at=size)
+                except OSError:
+                    break
+                for line in lines:
+                    try:
+                        event = json.loads(line)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(event, dict):
+                        try:
+                            self.ingest(event, path, reconstructing=True)
+                        except (TypeError, ValueError, OverflowError, OSError):
+                            # A valid JSON object can still contain invalid field
+                            # types. Preserve subsequent lifecycle records.
+                            continue
+                if follower.position_for(path) <= before:
+                    break
+            offsets[path] = follower.position_for(path, complete_only=True)
             self._enrich_thread(task)
+            # Replay often finishes within the live-write throttle interval.
+            # Flush the final running summary so tokens/model/title are current.
+            self._persist_history(task, force=True)
+        return offsets
+
+    def history_query(
+        self,
+        *,
+        project: str = "",
+        status: str = "",
+        since: object = "",
+        until: object = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        if self.history is None:
+            return {"available": False, "items": [], "total": 0, "limit": limit, "offset": offset}
+        try:
+            result = self.history.query(
+                project=project,
+                status=status,
+                since=parse_timestamp(since),
+                until=parse_timestamp(until),
+                limit=limit,
+                offset=offset,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            self._history_last_error = f"{type(exc).__name__}: {exc}"
+            return {
+                "available": False,
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "error": "历史数据库暂不可读取",
+            }
+        self._history_last_error = ""
+        return result
+
+    def history_csv(self, **filters: object) -> str:
+        if self.history is None:
+            return ""
+        for key in ("since", "until"):
+            if key in filters:
+                filters[key] = parse_timestamp(filters[key])
+        return self.history.export_csv(**filters)
+
+    def control_task(self, action: str, session_id: str = "", turn_id: str = "") -> dict[str, object]:
+        valid = {"select", "pin", "unpin", "recheck", "ignore", "clear_selection"}
+        if action not in valid:
+            return {"ok": False, "error": "不支持的任务操作"}
+        with self._lock:
+            if action in {"unpin", "clear_selection"}:
+                if self._selected_session_id == self._pinned_session_id:
+                    self._selected_session_id = ""
+                self._pinned_session_id = ""
+                if action == "clear_selection":
+                    self._selected_session_id = ""
+                return {"ok": True, "action": action}
+            task = next(
+                (item for item in self._tasks.values() if item.session_id == session_id and not item.ignored), None
+            )
+            if task is None or (turn_id and task.turn_id != turn_id):
+                return {"ok": False, "error": "任务不存在或当前轮次已变化"}
+            if action in {"select", "pin"}:
+                task.dismissed = False
+                self._dismissed_turns.pop(task.session_id, None)
+                self._selected_session_id = task.session_id
+                self._pinned_session_id = task.session_id if action == "pin" else ""
+            elif action == "ignore":
+                task.dismissed = True
+                self._dismissed_turns[task.session_id] = task.turn_id
+                if self._selected_session_id == task.session_id:
+                    self._selected_session_id = ""
+                if self._pinned_session_id == task.session_id:
+                    self._pinned_session_id = ""
+                self._persist_history(task, status="ignored")
+            elif action == "recheck":
+                path = task.path
+                if not path.is_file():
+                    return {"ok": False, "error": "任务日志不可读取"}
+                preserved_dismissed = task.dismissed
+                previous = task
+                self._tasks[path] = SessionTask(path=path, session_id=task.session_id)
+                if path not in self.rebuild([path]):
+                    self._tasks[path] = previous
+                    return {"ok": False, "error": "任务日志不可读取"}
+                task = self._tasks[path]
+                task.dismissed = preserved_dismissed
+                task.stale = previous.stale and task.updated_at <= previous.updated_at and task.status in ACTIVE_STATES
+            return {
+                "ok": True,
+                "action": action,
+                "session_id": task.session_id,
+                "turn_id": task.turn_id,
+                "status": task.status,
+                "pinned": self._pinned_session_id == task.session_id,
+                "ignored": task.dismissed,
+            }
+
+    def _persist_history(
+        self,
+        task: SessionTask,
+        *,
+        status: str = "",
+        git_stats: dict[str, object] | None = None,
+        force: bool = False,
+    ) -> None:
+        if self.history is None or task.ignored or not task.turn_id:
+            return
+        key = (task.session_id, task.turn_id)
+        if git_stats is not None:
+            self._history_git[key] = git_stats.copy()
+        now = time.monotonic()
+        if (
+            not force
+            and not status
+            and task.status in ACTIVE_STATES
+            and now - self._history_last_persisted.get(key, -100) < 2
+        ):
+            return
+        summary = {
+            "session_id": task.session_id,
+            "turn_id": task.turn_id,
+            "project": task.project,
+            # Store only the bounded display title, never full messages/tool output.
+            "task_title": compact_task_title(task.turn_title or task.title or task.project),
+            "status": status or ("ignored" if task.dismissed else task.status),
+            "started_at": task.started_at,
+            "updated_at": task.updated_at,
+            "completed_at": task.completed_at,
+            "duration_seconds": (
+                max(0, int(time.time() - task.started_at))
+                if task.status in ACTIVE_STATES and task.started_at
+                else task.duration_seconds
+            ),
+            "model": task.model,
+            "reasoning_effort": task.reasoning_effort,
+            "tokens": task.turn_total_tokens,
+            "last_tokens": task.last_tokens,
+            **self._history_git.get(key, {}),
+        }
+        try:
+            self.history.record(summary)
+        except (OSError, sqlite3.Error) as exc:
+            # History storage must never stop live monitoring.
+            self._history_last_error = f"{type(exc).__name__}: {exc}"
+        else:
+            self._history_last_error = ""
+            self._history_last_persisted[key] = now
 
     def ingest(self, event: dict[str, object], path: Path, *, reconstructing: bool = False) -> str:
         task = self.task_for(path)
@@ -233,17 +460,36 @@ class CodexTelemetry:
                 return ""
 
             if event_type == "event_msg" and payload_type == "user_message":
-                title = compact_task_title(payload.get("message"))
+                title = user_display_title(payload.get("message"))
+                if not title:
+                    return ""
                 if title:
                     if task.status in ACTIVE_STATES:
                         task.turn_title = title
                     else:
                         task.pending_turn_title = title
                 task.updated_at = max(task.updated_at, event_at)
+                if title and task.status in ACTIVE_STATES:
+                    self._persist_history(task, force=True)
+                return ""
+
+            if event_type == "response_item" and payload_type == "message" and payload.get("role") == "user":
+                title = response_user_title(payload)
+                if title:
+                    task.updated_at = max(task.updated_at, event_at)
+                    if task.status in ACTIVE_STATES:
+                        task.turn_title = title
+                        self._persist_history(task, force=True)
+                    else:
+                        task.pending_turn_title = title
                 return ""
 
             if event_type == "event_msg" and payload_type == "task_started":
                 task.turn_id = str(payload.get("turn_id") or "")
+                task.dismissed = self._dismissed_turns.get(task.session_id) == task.turn_id
+                if not task.dismissed:
+                    self._dismissed_turns.pop(task.session_id, None)
+                task.stale = False
                 task.turn_title = task.pending_turn_title
                 task.pending_turn_title = ""
                 task.status = "running"
@@ -252,14 +498,17 @@ class CodexTelemetry:
                 task.updated_at = event_at
                 task.completed_at = 0.0
                 task.duration_seconds = 0
-                task.context_window = int(payload.get("model_context_window") or task.context_window or 0)
+                task.context_window = safe_counter(payload.get("model_context_window"), task.context_window)
                 task.last_tokens = 0
+                task.token_baseline = task.total_tokens
+                task.turn_total_tokens = 0
                 task.patch_files.clear()
                 task.patch_added = 0
                 task.patch_deleted = 0
-                self._enrich_thread(task, refresh=True)
+                self._enrich_thread(task, refresh=not reconstructing)
                 if self.task_stats_scope == "turn" and not reconstructing:
                     task.turn_git_sha = self._git_head(task.cwd)
+                self._persist_history(task)
                 return "running"
 
             if event_type == "event_msg" and payload_type in {
@@ -271,10 +520,14 @@ class CodexTelemetry:
                 return "waiting"
 
             if event_type == "event_msg" and payload_type == "task_complete":
+                if payload.get("turn_id") and task.turn_id and str(payload["turn_id"]) != task.turn_id:
+                    return ""
                 self._finish_task(task, payload, event_at, "success", "任务完成")
                 return "success"
 
             if event_type == "event_msg" and payload_type == "turn_aborted":
+                if payload.get("turn_id") and task.turn_id and str(payload["turn_id"]) != task.turn_id:
+                    return ""
                 self._finish_task(task, payload, event_at, "error", "任务已中止")
                 return "error"
 
@@ -334,16 +587,23 @@ class CodexTelemetry:
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
-            visible = [task for task in self._tasks.values() if not task.ignored and task.session_id]
+            visible = [
+                task for task in self._tasks.values() if not task.ignored and not task.dismissed and task.session_id
+            ]
             active = [task for task in visible if task.status in ACTIVE_STATES]
             candidates = active or [task for task in visible if task.status in TERMINAL_STATES] or visible
             candidates.sort(key=lambda item: item.updated_at, reverse=True)
             task = candidates[0] if candidates else None
+            selected = self._pinned_session_id or self._selected_session_id
+            if selected:
+                task = next((item for item in visible if item.session_id == selected), task)
             if task is None:
                 return self._empty_snapshot()
             other_active = [item for item in active if item is not task]
             other_active.sort(key=lambda item: item.updated_at, reverse=True)
             active_tasks = [self._task_summary(item) for item in active]
+            for item in active_tasks:
+                item["pinned"] = item["session_id"] == self._pinned_session_id
             other_active_projects = [item.project for item in other_active]
             self._enrich_thread(task)
             baseline = self._task_baseline(task)
@@ -360,12 +620,14 @@ class CodexTelemetry:
             snapshot = {
                 "session_id": task.session_id,
                 "turn_id": task.turn_id,
+                "selected_session_id": self._selected_session_id,
+                "pinned_session_id": self._pinned_session_id,
                 "status": task.status,
                 "stage": self._display_stage(task),
                 "project": task.project,
                 "task_title": task.turn_title or task.title or task.project,
                 "active_count": len(active),
-                "other_active_count": max(0, len(active) - 1),
+                "other_active_count": len(other_active),
                 "other_active_project": other_active[0].project if other_active else "",
                 "other_active_projects": other_active_projects,
                 "active_tasks": active_tasks,
@@ -374,6 +636,7 @@ class CodexTelemetry:
                 "reasoning_effort": task.reasoning_effort,
                 "last_tokens": task.last_tokens,
                 "total_tokens": task.total_tokens,
+                "turn_total_tokens": task.turn_total_tokens,
                 "cached_input_tokens": task.cached_input_tokens,
                 "reasoning_tokens": task.reasoning_tokens,
                 "token_label": f"本轮 {compact_number(task.last_tokens)} tokens"
@@ -385,7 +648,7 @@ class CodexTelemetry:
                 if task.updated_at
                 else "",
                 "event_age_seconds": event_age,
-                "health_label": self._health_label(event_age, bool(active)),
+                "health_label": self._health_label(event_age, task.status in ACTIVE_STATES),
             }
         return {**snapshot, **self._git_snapshot(task_snapshot, baseline)}
 
@@ -454,7 +717,11 @@ class CodexTelemetry:
 
     def active_paths(self) -> set[Path]:
         with self._lock:
-            return {task.path for task in self._tasks.values() if task.status in ACTIVE_STATES and not task.ignored}
+            return {
+                task.path
+                for task in self._tasks.values()
+                if task.status in ACTIVE_STATES and not task.ignored and not task.dismissed
+            }
 
     def prune(self, active_paths: set[Path]) -> None:
         resolved = {path.resolve() for path in active_paths}
@@ -466,6 +733,10 @@ class CodexTelemetry:
             retained_sessions = {task.session_id for task in self._tasks.values() if task.session_id}
             for session_id in removed_sessions - retained_sessions:
                 self._thread_cache.pop(session_id, None)
+            self._history_git = {key: value for key, value in self._history_git.items() if key[0] in retained_sessions}
+            self._history_last_persisted = {
+                key: value for key, value in self._history_last_persisted.items() if key[0] in retained_sessions
+            }
             retained_cwds = {task.cwd for task in self._tasks.values() if task.cwd}
             for key in list(self._git_cache):
                 if key[0] not in retained_cwds:
@@ -500,6 +771,8 @@ class CodexTelemetry:
                 "git_fetch_unconfirmed": sum(
                     state.get("status") in {"different", "unconfirmed"} for state in self._git_remote_states.values()
                 ),
+                "history_available": self.history is not None,
+                "history_last_error": self._history_last_error,
             }
 
     def invalidate_git(self, cwd: str) -> None:
@@ -514,10 +787,13 @@ class CodexTelemetry:
     def _set_active(self, task: SessionTask, status: str, stage: str, event_at: float) -> None:
         if not task.started_at:
             task.started_at = event_at
+        changed = task.status != status
         task.stale = False
         task.status = status
         task.stage = stage
         task.updated_at = max(task.updated_at, event_at)
+        if changed:
+            self._persist_history(task, force=True)
 
     @staticmethod
     def _display_stage(task: SessionTask) -> str:
@@ -545,7 +821,7 @@ class CodexTelemetry:
         duration_ms = payload.get("duration_ms")
         try:
             duration = int(float(duration_ms) / 1000) if duration_ms is not None else 0
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             duration = 0
         if not duration and task.started_at:
             duration = max(0, int(completed_at - task.started_at))
@@ -556,17 +832,20 @@ class CodexTelemetry:
         task.updated_at = max(task.updated_at, event_at)
         task.duration_seconds = duration
         self.invalidate_git(task.cwd)
+        self._persist_history(task)
 
     def _apply_token_info(self, task: SessionTask, info: dict[str, object]) -> None:
         last = info.get("last_token_usage", {})
         total = info.get("total_token_usage", {})
         if isinstance(last, dict):
-            task.last_tokens = int(last.get("total_tokens") or task.last_tokens or 0)
-            task.cached_input_tokens = int(last.get("cached_input_tokens") or 0)
-            task.reasoning_tokens = int(last.get("reasoning_output_tokens") or 0)
+            task.last_tokens = safe_counter(last.get("total_tokens"), task.last_tokens)
+            task.cached_input_tokens = safe_counter(last.get("cached_input_tokens"))
+            task.reasoning_tokens = safe_counter(last.get("reasoning_output_tokens"))
         if isinstance(total, dict):
-            task.total_tokens = int(total.get("total_tokens") or task.total_tokens or 0)
-        task.context_window = int(info.get("model_context_window") or task.context_window or 0)
+            task.total_tokens = safe_counter(total.get("total_tokens"), task.total_tokens)
+            task.turn_total_tokens = max(0, task.total_tokens - task.token_baseline)
+        task.context_window = safe_counter(info.get("model_context_window"), task.context_window)
+        self._persist_history(task)
 
     def _enrich_thread(self, task: SessionTask, *, refresh: bool = False) -> None:
         if not task.session_id:
@@ -675,6 +954,9 @@ class CodexTelemetry:
             with self._lock:
                 if self._git_generations.get(task.cwd, 0) == generation:
                     self._git_cache[key] = (time.monotonic(), result.copy())
+                    current = self._tasks.get(task.path)
+                    if current is not None and current.turn_id == task.turn_id:
+                        self._persist_history(current, git_stats=result)
                 self._git_last_error = ""
                 self._git_last_finished_at = time.time()
         finally:
@@ -862,9 +1144,17 @@ class CodexTelemetry:
             "git_files": 0,
             "git_added": 0,
             "git_deleted": 0,
+            "git_worktree_files": 0,
+            "git_worktree_added": 0,
+            "git_worktree_deleted": 0,
+            "git_worktree_label": "本地修改 --",
             "git_sync_files": 0,
             "git_sync_added": 0,
             "git_sync_deleted": 0,
+            "git_pull_files": 0,
+            "git_pull_added": 0,
+            "git_pull_deleted": 0,
+            "git_pull_label": "待拉取 --",
             "git_commits": 0,
             "git_ahead": 0,
             "git_behind": 0,
@@ -900,11 +1190,13 @@ class CodexTelemetry:
                 if cached and time.monotonic() - cached[0] < self.git_cache_seconds:
                     return cached[1].copy()
 
+        git_cwd = task.cwd
+
         def git(*args: str, strip: bool = True) -> tuple[int, str]:
             try:
                 result = subprocess.run(
                     ["git", "-c", "core.quotepath=false", *args],
-                    cwd=task.cwd,
+                    cwd=git_cwd,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -920,8 +1212,9 @@ class CodexTelemetry:
         return_code, root = git("rev-parse", "--show-toplevel")
         if return_code or not root:
             return empty
+        git_cwd = root
         _, branch = git("branch", "--show-current")
-        _, porcelain = git("status", "--porcelain=v1", "-z", "--untracked-files=all", strip=False)
+        porcelain_code, porcelain = git("status", "--porcelain=v1", "-z", "--untracked-files=all", strip=False)
         dirty = False
         untracked: dict[str, int] = {}
         records = porcelain.split("\0")
@@ -939,7 +1232,7 @@ class CodexTelemetry:
                 continue
             dirty = True
             if status_code == "??":
-                candidate = Path(task.cwd) / relative
+                candidate = Path(root) / relative
                 try:
                     content = (
                         candidate.read_bytes()
@@ -954,9 +1247,12 @@ class CodexTelemetry:
                     else 0
                 )
 
-        def diff_stats(reference: str) -> tuple[bool, set[str], int, int]:
-            diff_code, numstat = git("diff", "--numstat", "-z", reference, "--", strip=False)
-            name_code, names_text = git("diff", "--name-only", "-z", reference, "--", strip=False)
+        def diff_stats(
+            reference: str, target: str = "", *, include_untracked: bool = True
+        ) -> tuple[bool, set[str], int, int]:
+            revisions = (reference, target) if target else (reference,)
+            diff_code, numstat = git("diff", "--numstat", "-z", *revisions, "--", strip=False)
+            name_code, names_text = git("diff", "--name-only", "-z", *revisions, "--", strip=False)
             files = (
                 {line for line in names_text.split("\0") if line and not self._git_path_excluded(line)}
                 if name_code == 0
@@ -991,7 +1287,7 @@ class CodexTelemetry:
                     if parts[1].isdigit():
                         deleted += file_deleted or 0
                     files.add(relative)
-            summary_code, summary = git("diff", "--summary", reference, "--")
+            summary_code, summary = git("diff", "--summary", *revisions, "--")
             if summary_code == 0:
                 for line in summary.splitlines():
                     match = re.search(r"mode change \d+ => \d+ (.+)$", line)
@@ -1005,12 +1301,30 @@ class CodexTelemetry:
                         files.add(relative)
                     else:
                         files.discard(relative)
-            for relative, line_count in untracked.items():
-                files.add(relative)
-                added += line_count
+            if include_untracked:
+                for relative, line_count in untracked.items():
+                    files.add(relative)
+                    added += line_count
             return diff_code == 0 and name_code == 0, files, added, deleted
 
-        _, task_files, task_added, task_deleted = diff_stats(baseline)
+        task_ok, task_files, task_added, task_deleted = diff_stats(baseline)
+        if baseline == "HEAD":
+            worktree_ok, worktree_files, worktree_added, worktree_deleted = (
+                task_ok,
+                task_files,
+                task_added,
+                task_deleted,
+            )
+        else:
+            worktree_ok, worktree_files, worktree_added, worktree_deleted = diff_stats("HEAD")
+        if not worktree_ok or porcelain_code:
+            worktree_label = "有未提交修改（统计未完成）" if dirty else "本地修改暂不可统计"
+        elif worktree_files:
+            worktree_label = f"未提交 {len(worktree_files)} 项  +{worktree_added}  -{worktree_deleted}"
+        elif dirty:
+            worktree_label = "有未提交修改（净差异 0 项）"
+        else:
+            worktree_label = "工作区干净"
 
         _, commits_text = git("rev-list", "--count", f"{baseline}..HEAD")
         try:
@@ -1053,22 +1367,44 @@ class CodexTelemetry:
             state_label = "跟踪 未配置"
 
         if upstream_code == 0:
-            _, sync_files, sync_added, sync_deleted = diff_stats("@{upstream}")
-            cumulative_label = f"待推送 {len(sync_files)} 项  +{sync_added}  -{sync_deleted}"
+            base_code, common_base = git("merge-base", "HEAD", "@{upstream}")
+            if base_code == 0 and common_base:
+                _, sync_files, sync_added, sync_deleted = diff_stats(common_base)
+                _, pull_files, pull_added, pull_deleted = diff_stats(
+                    common_base, "@{upstream}", include_untracked=False
+                )
+                cumulative_label = f"待推送 {len(sync_files)} 项  +{sync_added}  -{sync_deleted}"
+                pull_label = f"待拉取 {len(pull_files)} 项  +{pull_added}  -{pull_deleted}"
+            else:
+                sync_files, pull_files = set(), set()
+                sync_added = sync_deleted = pull_added = pull_deleted = 0
+                cumulative_label = "待推送 --"
+                pull_label = "待拉取 --"
         else:
             sync_files = set()
+            pull_files = set()
             sync_added = 0
             sync_deleted = 0
+            pull_added = pull_deleted = 0
             cumulative_label = "待推送 --"
+            pull_label = "待拉取 --"
         result = {
             "git_available": True,
             "git_branch": branch or task.git_branch or "--",
             "git_files": len(task_files),
             "git_added": task_added,
             "git_deleted": task_deleted,
+            "git_worktree_files": len(worktree_files),
+            "git_worktree_added": worktree_added,
+            "git_worktree_deleted": worktree_deleted,
+            "git_worktree_label": worktree_label,
             "git_sync_files": len(sync_files),
             "git_sync_added": sync_added,
             "git_sync_deleted": sync_deleted,
+            "git_pull_files": len(pull_files),
+            "git_pull_added": pull_added,
+            "git_pull_deleted": pull_deleted,
+            "git_pull_label": pull_label,
             "git_commits": commits,
             "git_ahead": ahead,
             "git_behind": behind,
@@ -1086,6 +1422,9 @@ class CodexTelemetry:
         if cache_result:
             with self._lock:
                 self._git_cache[key] = (time.monotonic(), result.copy())
+                current = self._tasks.get(task.path)
+                if current is not None and current.turn_id == task.turn_id:
+                    self._persist_history(current, git_stats=result)
         return result
 
     @staticmethod
@@ -1103,6 +1442,8 @@ class CodexTelemetry:
         return {
             "session_id": "",
             "turn_id": "",
+            "selected_session_id": "",
+            "pinned_session_id": "",
             "status": "idle",
             "stage": "Codex 空闲",
             "project": "等待任务",
@@ -1117,6 +1458,7 @@ class CodexTelemetry:
             "reasoning_effort": "",
             "last_tokens": 0,
             "total_tokens": 0,
+            "turn_total_tokens": 0,
             "cached_input_tokens": 0,
             "reasoning_tokens": 0,
             "token_label": "本轮 -- tokens",
@@ -1130,7 +1472,15 @@ class CodexTelemetry:
             "git_files": 0,
             "git_added": 0,
             "git_deleted": 0,
+            "git_worktree_files": 0,
+            "git_worktree_added": 0,
+            "git_worktree_deleted": 0,
+            "git_worktree_label": "本地修改 --",
             "git_commits": 0,
+            "git_pull_files": 0,
+            "git_pull_added": 0,
+            "git_pull_deleted": 0,
+            "git_pull_label": "待拉取 --",
             "git_ahead": 0,
             "git_behind": 0,
             "git_dirty": False,

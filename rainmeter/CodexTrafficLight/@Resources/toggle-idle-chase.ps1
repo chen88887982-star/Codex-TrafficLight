@@ -1,5 +1,6 @@
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+﻿$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VariablesFile = Join-Path $ScriptDir "variables.inc"
+. (Join-Path $ScriptDir "skin-settings.ps1")
 
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
 
@@ -12,3 +13,4 @@ if ($content -match '(?m)^IdleChaseEnabled=1\s*$') {
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
+Refresh-CodexSkins

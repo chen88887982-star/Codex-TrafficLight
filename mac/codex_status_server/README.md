@@ -6,7 +6,7 @@
 启动状态服务.command
 ```
 
-服务会隐藏在后台运行，默认监听 `0.0.0.0:8767`，供同一局域网内的 Windows Rainmeter 读取。重复双击不会启动第二个实例。
+服务会隐藏在后台运行，首次默认监听 `0.0.0.0:8767`，供同一局域网内的 Windows Rainmeter 读取。重复双击不会启动第二个实例。
 
 本机验证：
 
@@ -43,3 +43,9 @@ CODEX_STATUS_HOST=127.0.0.1 ./启动状态服务.command
 ## 只读体检
 
 运行 `bash .internal/health-check.command`，会核验版本、协议、端口、进程身份及登录启动配置，并给出日志位置和处理建议。自定义端口通过 `PORT` 指定。异常退出码为 1，不会自动停止任何进程。
+
+## 0.5 启动配置
+
+成功启动后，地址与端口保存到 `.runtime/launch-settings.json`。以后双击和登录启动会沿用；`CODEX_STATUS_HOST`、`CODEX_STATUS_PORT` 或 `PORT` 可显式覆盖。只读体检默认检查保存的端口。
+
+Windows 皮肤的通知和维护按钮仅操作 Windows 本机。Mac 的服务通知设置应在 Mac 上调整；Windows 可以从皮肤打开 Mac 的状态看板，查看健康、历史及额度刷新进度。

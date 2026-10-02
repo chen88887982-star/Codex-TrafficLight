@@ -20,7 +20,15 @@ from codex_status_server import (
     resolve_codex_command,
     resolve_expose_task_details,
 )
-from codex_telemetry import CodexTelemetry, compact_task_title, count_unified_diff, friendly_tool_stage
+from codex_telemetry import (
+    CodexTelemetry,
+    compact_number,
+    compact_task_title,
+    count_unified_diff,
+    friendly_tool_stage,
+    parse_timestamp,
+)
+from service_runtime import JsonlFollower
 
 
 def event(timestamp: str, payload_type: str, **payload: object) -> dict[str, object]:
@@ -192,6 +200,188 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["status"], "running")
             self.assertEqual(snapshot["project"], "project")
 
+    def test_response_user_titles_follow_started_turn_and_skip_injected_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracker = CodexTelemetry(root)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            tracker.ingest(event("2026-10-03T01:00:00Z", "task_started", turn_id="t1"), path)
+
+            def user_message(text: str) -> dict[str, object]:
+                return {
+                    "timestamp": "2026-10-03T01:00:01Z",
+                    "type": "response_item",
+                    "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]},
+                }
+
+            tracker.ingest(user_message("全部开始优化 升级 开发\n"), path)
+            self.assertEqual(tracker.snapshot()["task_title"], "全部开始优化 升级 开发")
+            for context in (
+                '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>',
+                "<environment_context>private environment</environment_context>",
+                "# AGENTS.md instructions\n<INSTRUCTIONS>do not store this</INSTRUCTIONS>",
+            ):
+                tracker.ingest(user_message(context), path)
+                self.assertEqual(tracker.snapshot()["task_title"], "全部开始优化 升级 开发")
+            self.assertEqual(tracker.task_for(path).status, "running")
+
+    def test_rebuild_cursor_captures_startup_gap_and_partial_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            path.write_text(json.dumps(event("2026-10-03T01:00:00Z", "task_started", turn_id="t1")) + "\n")
+            tracker = CodexTelemetry(root)
+            offsets = tracker.rebuild([path])
+            with path.open("a") as handle:
+                handle.write(json.dumps(event("2026-10-03T01:00:01Z", "task_complete", turn_id="t1")) + "\n")
+            follower = JsonlFollower()
+            follower.start_at_offset(path, offsets[path.resolve()])
+            for line in follower.read_lines(path):
+                tracker.ingest(json.loads(line), path)
+            self.assertEqual(tracker.snapshot()["status"], "success")
+
+    def test_rebuild_large_tool_record_keeps_start_and_turn_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            records = [
+                event("2026-10-03T01:00:00Z", "task_started", turn_id="long-turn"),
+                {
+                    "timestamp": "2026-10-03T01:00:01Z",
+                    "type": "response_item",
+                    "payload": {"type": "custom_tool_call_output", "output": "x" * (9 * 1024 * 1024)},
+                },
+            ]
+            path.write_text("\n".join(json.dumps(item) for item in records) + "\n")
+            tracker = CodexTelemetry(root)
+            offsets = tracker.rebuild([path])
+            self.assertEqual(offsets[path.resolve()], path.stat().st_size)
+            self.assertEqual(tracker.snapshot()["status"], "running")
+            self.assertEqual(tracker.snapshot()["turn_id"], "long-turn")
+
+    def test_rebuild_skips_bad_records_and_nonfinite_fields_without_losing_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "rollout-019ffd23-fd68-7952-afc5-78495e834d2e.jsonl"
+            records = [
+                event("2026-10-03T01:00:00Z", "task_started", turn_id="t1"),
+                [],
+                None,
+                event(
+                    float("inf"),
+                    "token_count",
+                    info={"last_token_usage": {"total_tokens": float("inf")}, "model_context_window": {"bad": "type"}},
+                ),
+                event("2026-10-03T01:00:02Z", "task_complete", turn_id="t1", duration_ms=float("nan")),
+            ]
+            path.write_text("\n".join(json.dumps(item) for item in records) + "\n")
+            tracker = CodexTelemetry(root)
+            offsets = tracker.rebuild([path])
+            self.assertEqual(offsets[path.resolve()], path.stat().st_size)
+            self.assertEqual(tracker.snapshot()["status"], "success")
+            self.assertEqual(tracker.task_for(path).last_tokens, 0)
+            for value in (float("nan"), float("inf"), -float("inf"), 10**400):
+                self.assertEqual(parse_timestamp(value), 0)
+                self.assertEqual(compact_number(value), "--")
+
+    def test_rebuild_isolates_single_record_decoder_error_and_continues_other_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = [root / f"rollout-019ffd23-fd68-7952-afc5-78495e834d2{index}.jsonl" for index in (1, 2)]
+            for path in paths:
+                records = [
+                    event("2026-10-03T01:00:00Z", "task_started", turn_id="t1"),
+                    event("2026-10-03T01:00:01Z", "bad_adapter_record"),
+                    event("2026-10-03T01:00:02Z", "task_complete", turn_id="t1"),
+                ]
+                path.write_text("\n".join(json.dumps(item) for item in records) + "\n")
+            tracker = CodexTelemetry(root)
+            original = tracker.ingest
+
+            def decode(record: dict, path: Path, **kwargs: object) -> str:
+                if record["payload"]["type"] == "bad_adapter_record":
+                    raise ValueError("invalid upstream field")
+                return original(record, path, **kwargs)
+
+            with patch.object(tracker, "ingest", side_effect=decode):
+                offsets = tracker.rebuild(paths)
+            self.assertEqual(len(offsets), 2)
+            self.assertTrue(all(tracker.task_for(path).status == "success" for path in paths))
+
+    def test_task_selection_ignore_and_recheck_only_change_monitoring(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tracker = CodexTelemetry(root)
+            paths = []
+            for index in (1, 2):
+                path = root / f"rollout-019ffd23-fd68-7952-afc5-78495e834d2{index}.jsonl"
+                paths.append(path)
+                started = event(f"2026-10-03T01:00:0{index}Z", "task_started", turn_id=f"t{index}")
+                path.write_text(json.dumps(started) + "\n")
+                tracker.ingest(started, path)
+            first = tracker.task_for(paths[0])
+            second = tracker.task_for(paths[1])
+            self.assertEqual(tracker.snapshot()["session_id"], second.session_id)
+            self.assertTrue(tracker.control_task("pin", first.session_id)["ok"])
+            self.assertEqual(tracker.snapshot()["session_id"], first.session_id)
+            tracker.control_task("unpin")
+            self.assertEqual(tracker.snapshot()["session_id"], second.session_id)
+            tracker.control_task("ignore", second.session_id, second.turn_id)
+            self.assertEqual(second.status, "running")
+            self.assertNotIn(paths[1].resolve(), tracker.active_paths())
+            tracker.ingest(event("2026-10-03T01:00:03Z", "task_started", turn_id="t3"), paths[1])
+            self.assertIn(paths[1].resolve(), tracker.active_paths())
+            with paths[0].open("a") as handle:
+                handle.write(json.dumps(event("2026-10-03T01:00:04Z", "task_complete", turn_id="t1")) + "\n")
+            self.assertTrue(tracker.control_task("recheck", first.session_id)["ok"])
+            self.assertEqual(tracker.task_for(paths[0]).status, "success")
+            self.assertFalse(tracker.control_task("ignore", second.session_id, "old-turn")["ok"])
+
+    def test_git_pending_push_excludes_remote_only_changes_and_reads_nested_untracked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*args: str) -> str:
+                return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+            git("init", "-q")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+            sub = root / "sub"
+            sub.mkdir()
+            tracked = sub / "tracked.txt"
+            tracked.write_text("one\n")
+            git("add", ".")
+            git("commit", "-qm", "baseline")
+            git("branch", "-m", "main")
+            baseline = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "remote-work")
+            tracked.write_text("one\ntwo\nthree\n")
+            git("commit", "-qam", "remote-only")
+            remote = git("rev-parse", "HEAD")
+            git("checkout", "-q", "main")
+            git("remote", "add", "origin", str(root / "unused.git"))
+            git("update-ref", "refs/remotes/origin/main", remote)
+            git("branch", "--set-upstream-to=origin/main")
+            tracker = CodexTelemetry(root, git_cache_seconds=0)
+            task = tracker.task_for(root / "session.jsonl")
+            task.cwd = str(sub)
+            task.git_sha = baseline
+            stats = tracker._git_stats(task)
+            self.assertEqual(stats["git_behind"], 1)
+            self.assertEqual(stats["git_sync_files"], 0)
+            self.assertEqual(stats["git_sync_deleted"], 0)
+            self.assertEqual(stats["git_pull_added"], 2)
+            self.assertEqual(stats["git_worktree_files"], 0)
+            self.assertEqual(stats["git_worktree_label"], "工作区干净")
+            (sub / "new.txt").write_text("a\nb\nc\n")
+            stats = tracker._git_stats(task, use_cache=False)
+            self.assertEqual(stats["git_added"], 3)
+            self.assertEqual(stats["git_sync_added"], 3)
+            self.assertEqual(stats["git_worktree_files"], 1)
+            self.assertEqual(stats["git_worktree_added"], 3)
+            self.assertEqual(stats["git_worktree_deleted"], 0)
+
     def test_privacy_snapshot_redacts_work_details(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -247,6 +437,9 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["git_task_label"], "本次 1 项  +1  -0")
             self.assertEqual(snapshot["git_sync_label"], "待推送 1 项  +1  -0")
             self.assertEqual(snapshot["git_sync_files"], 1)
+            self.assertEqual(snapshot["git_worktree_files"], 1)
+            self.assertEqual(snapshot["git_worktree_added"], 1)
+            self.assertEqual(snapshot["git_worktree_label"], "未提交 1 项  +1  -0")
 
             subprocess.run(["git", "add", "app.py"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "task change"], cwd=root, check=True)
@@ -254,6 +447,9 @@ class CodexTelemetryTests(unittest.TestCase):
             self.assertEqual(snapshot["git_change_label"], "本次 1 项  +1  -0")
             self.assertEqual(snapshot["git_cumulative_label"], "待推送 1 项  +1  -0")
             self.assertEqual(snapshot["git_state_label"], "跟踪 领先 1")
+            self.assertEqual(snapshot["git_worktree_files"], 0)
+            self.assertEqual(snapshot["git_worktree_added"], 0)
+            self.assertEqual(snapshot["git_worktree_label"], "工作区干净")
 
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
             subprocess.run(["git", "update-ref", "refs/remotes/origin/main", head], cwd=root, check=True)

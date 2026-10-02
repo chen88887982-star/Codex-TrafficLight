@@ -41,3 +41,20 @@ http://127.0.0.1:8767/health
 .\.internal\set-status.ps1 idle
 .\.internal\set-status.ps1 running "Codex 正在执行任务"
 ```
+
+## 0.5 升级与安装路径
+
+首次启动默认只监听本机。成功启动后，监听地址与端口保存在 `.runtime/launch-settings.json`；以后双击、登录启动、修改通知后重启均沿用该配置。`lan` 参数显式切换为局域网监听；需要自定义端口可设置 `CODEX_STATUS_PORT` 后启动。
+
+皮肤安装会读取正在运行的 Rainmeter/便携配置中的 `SkinPath`，并支持 Windows 文档目录重定向。自定义安装时可执行：
+
+```cmd
+install-rainmeter-skin.cmd -SkinPath "D:\Rainmeter Skins"
+install-rainmeter-skin.cmd -SettingsPath "D:\Portable Rainmeter\Rainmeter.ini"
+```
+
+`-SkinPath` 指向整个 Skins 目录，安装器自动创建其中的 `CodexTrafficLight` 子目录。旧用户设置会备份并保留。
+
+设置页的“只读服务体检”不会修复或清理；“修复本机服务”是独立操作。显示远程电脑时，本机维护和通知按钮会说明目标范围，不会修改远程服务。点击主皮肤标题可打开状态看板，右键标题进入历史；点击额度数字可在看板手动刷新额度并查看进度。
+
+整体缩放支持 75–180%，文字、图形和点击区域同步。离线标签显示本机最后成功读取数据的时间，超过 10 秒没有新数据后状态灯变灰。

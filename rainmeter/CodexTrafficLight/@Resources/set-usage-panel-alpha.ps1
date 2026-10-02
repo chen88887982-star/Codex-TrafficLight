@@ -5,6 +5,7 @@
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VariablesFile = Join-Path $ScriptDir "variables.inc"
+. (Join-Path $ScriptDir "skin-settings.ps1")
 
 if ([string]::IsNullOrWhiteSpace($Percent)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
@@ -68,3 +69,4 @@ if ($content -match '(?m)^UsagePanelStrokeColor=.*$') {
 }
 
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
+Refresh-CodexSkins

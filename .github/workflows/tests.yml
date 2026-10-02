@@ -10,9 +10,12 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.13"]
+        python-version: ["3.10", "3.13", "3.14"]
     env:
       PYTHONPATH: common
+      PYTHONDONTWRITEBYTECODE: "1"
+      CODEX_STATUS_BASE_DIR: ${{ runner.temp }}/trafficlight-tests/runtime
+      CODEX_HOME: ${{ runner.temp }}/trafficlight-tests/codex
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

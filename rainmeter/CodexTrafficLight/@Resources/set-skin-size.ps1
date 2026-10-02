@@ -1,75 +1,33 @@
-﻿param(
-  [string]$Size = ""
-)
-
-$ErrorActionPreference = "Stop"
+﻿param([string]$Size = '')
+$ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$VariablesFile = Join-Path $ScriptDir "variables.inc"
+. (Join-Path $ScriptDir 'skin-settings.ps1')
+$VariablesFile = Join-Path $ScriptDir 'variables.inc'
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
-$currentWidth = "208"
-$currentHeight = "760"
-
-$widthMatch = [regex]::Match($content, "(?m)^SkinWidth=(\d+)\s*$")
-if ($widthMatch.Success) {
-  $currentWidth = $widthMatch.Groups[1].Value
-}
-
-$heightMatch = [regex]::Match($content, "(?m)^SkinHeight=(\d+)\s*$")
-if ($heightMatch.Success) {
-  $currentHeight = $heightMatch.Groups[1].Value
-}
-
+$scaleMatch = [regex]::Match($content, '(?m)^SkinScale=([0-9.]+)')
+$current = if ($scaleMatch.Success) { [double]::Parse($scaleMatch.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture) * 100 } else { 100 }
 if ([string]::IsNullOrWhiteSpace($Size)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
-  $Size = [Microsoft.VisualBasic.Interaction]::InputBox(
-    "请输入皮肤整体尺寸，格式为 宽度,高度。例如：208,760。",
-    "Codex 交通灯皮肤尺寸",
-    "$currentWidth,$currentHeight"
-  )
+  $Size = [Microsoft.VisualBasic.Interaction]::InputBox('请输入整体缩放百分比，范围 75-180。所有文字、图形与点击区域同比例调整。也支持旧格式 宽度,高度。', 'Codex 交通灯整体缩放', [string]$current)
 }
-
-if ([string]::IsNullOrWhiteSpace($Size)) {
-  exit 0
-}
-
-$parts = $Size -split '[,，xX*＊ ]+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-if ($parts.Count -ne 2) {
+if ([string]::IsNullOrWhiteSpace($Size)) { exit 0 }
+$parts = $Size.Trim().TrimEnd('%') -split '[,，xX*＊ ]+'
+$parsed = 0.0
+try {
+  if ($parts.Count -eq 2) {
+    $scale = [Math]::Min([double]::Parse($parts[0], [Globalization.CultureInfo]::InvariantCulture) / 208, [double]::Parse($parts[1], [Globalization.CultureInfo]::InvariantCulture) / 736)
+  } elseif ($parts.Count -eq 1) {
+    $scale = [double]::Parse($parts[0], [Globalization.CultureInfo]::InvariantCulture) / 100
+  } else { throw 'Invalid size' }
+  if ([double]::IsNaN($scale) -or [double]::IsInfinity($scale)) { throw 'Invalid size' }
+} catch {
   Add-Type -AssemblyName System.Windows.Forms
-  [System.Windows.Forms.MessageBox]::Show("请输入两个整数，格式为 宽度,高度。", "Codex 交通灯设置") | Out-Null
+  [System.Windows.Forms.MessageBox]::Show('请输入 75-180 之间的缩放百分比，或两个有效尺寸。', 'Codex 交通灯设置') | Out-Null
   exit 1
 }
-
-$width = 0
-$height = 0
-if (-not [int]::TryParse($parts[0], [ref]$width) -or -not [int]::TryParse($parts[1], [ref]$height)) {
-  Add-Type -AssemblyName System.Windows.Forms
-  [System.Windows.Forms.MessageBox]::Show("宽度和高度都必须是整数。", "Codex 交通灯设置") | Out-Null
-  exit 1
-}
-
-if ($width -lt 160) {
-  $width = 160
-}
-if ($width -gt 420) {
-  $width = 420
-}
-if ($height -lt 360) {
-  $height = 360
-}
-if ($height -gt 760) {
-  $height = 760
-}
-
-if ($content -match '(?m)^SkinWidth=.*$') {
-  $content = $content -replace '(?m)^SkinWidth=.*$', "SkinWidth=$width"
-} else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1SkinWidth=$width`r`n"
-}
-
-if ($content -match '(?m)^SkinHeight=.*$') {
-  $content = $content -replace '(?m)^SkinHeight=.*$', "SkinHeight=$height"
-} else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1SkinHeight=$height`r`n"
-}
-
+$scale = [Math]::Round([Math]::Max(0.75, [Math]::Min(1.8, $scale)), 3)
+$content = Set-SkinVariable $content 'SkinScale' $scale.ToString([Globalization.CultureInfo]::InvariantCulture)
+$content = Set-SkinVariable $content 'SkinWidth' ([string][int][Math]::Round(208 * $scale))
+$content = Set-SkinVariable $content 'SkinHeight' ([string][int][Math]::Round(736 * $scale))
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
+Refresh-CodexSkins

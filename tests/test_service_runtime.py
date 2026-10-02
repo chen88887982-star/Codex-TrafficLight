@@ -65,6 +65,50 @@ class ServiceRuntimeTests(unittest.TestCase):
             self.assertEqual(follower.read_lines(path), [])
             self.assertEqual(follower.tracked_count, 0)
 
+    def test_follower_complete_cursor_resumes_partial_record_without_skipping_new_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.jsonl"
+            first = b'{"id":1}\n'
+            path.write_bytes(first + b'{"id":')
+            follower = JsonlFollower()
+            self.assertEqual(follower.read_lines(path), ['{"id":1}'])
+            offset = follower.position_for(path, complete_only=True)
+            self.assertEqual(offset, len(first))
+            with path.open("ab") as handle:
+                handle.write(b'2}\n{"id":3}\n')
+            resumed = JsonlFollower()
+            resumed.start_at_offset(path, offset)
+            self.assertEqual(resumed.read_lines(path), ['{"id":2}', '{"id":3}'])
+
+    def test_follower_bounds_large_record_and_preserves_lifecycle_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.jsonl"
+            event = {
+                "timestamp": "2026-10-03T01:00:00Z",
+                "type": "response_item",
+                "payload": {"type": "custom_tool_call_output", "output": "x" * 10000},
+            }
+            path.write_text(json.dumps(event) + '\n{"id":2}\n', encoding="utf-8")
+            follower = JsonlFollower(max_read_bytes=1024, max_line_bytes=2048)
+            records = []
+            while follower.position_for(path) < path.stat().st_size:
+                records.extend(follower.read_lines(path))
+                self.assertLessEqual(len(follower._pending.get(path, b"")), 2048)
+            self.assertEqual(json.loads(records[0])["payload"]["type"], "custom_tool_call_output")
+            self.assertTrue(json.loads(records[0])["_large_record_summary"])
+            self.assertEqual(json.loads(records[1]), {"id": 2})
+
+    def test_follower_detects_replacement_with_same_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.jsonl"
+            path.write_text('{"id":1}\n')
+            follower = JsonlFollower()
+            self.assertEqual(follower.read_lines(path), ['{"id":1}'])
+            replacement = path.with_name("replacement.jsonl")
+            replacement.write_text('{"id":2}\n')
+            replacement.replace(path)
+            self.assertEqual(follower.read_lines(path), ['{"id":2}'])
+
     def test_single_flight_worker_coalesces_overlapping_requests(self) -> None:
         started = threading.Event()
         release = threading.Event()
@@ -196,6 +240,7 @@ class ServiceRuntimeTests(unittest.TestCase):
 
         aborted = ("/tmp/session.jsonl", "turn-2")
         tracker.mark_active(aborted)
+        self.assertTrue(tracker.complete(aborted, success=False))
         self.assertFalse(tracker.complete(aborted, success=False))
 
     def test_optional_credits_failure_keeps_valid_rate_limits(self) -> None:
@@ -203,6 +248,8 @@ class ServiceRuntimeTests(unittest.TestCase):
 import json, sys
 for line in sys.stdin:
     request = json.loads(line)
+    if request.get('method') == 'initialized':
+        continue
     request_id = request['id']
     method = request['method']
     if method == 'initialize':

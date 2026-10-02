@@ -13,5 +13,8 @@ status-server.log
 *.tmp
 **/status-server.pid
 **/.runtime/
+**/task-history.sqlite3*
+**/peer-services.json
+**/launch-settings.json
 Thumbs.db
 desktop.ini

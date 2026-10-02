@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -14,6 +17,11 @@ HELP_SCRIPT = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "show-he
 TASKS_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "Tasks" / "Tasks.ini"
 
 
+def base_scale_geometry(text: str) -> str:
+    """Evaluate the skin's fixed geometry at its documented 100 percent baseline."""
+    return re.sub(r"\((-?\d+(?:\.\d+)?)\*#SkinScale#\)", r"\1", text)
+
+
 class RainmeterContractTests(unittest.TestCase):
     def test_chinese_configs_keep_utf16le_bom(self) -> None:
         for path in (MAIN_SKIN, SETTINGS_SKIN, VARIABLES, TASKS_SKIN):
@@ -22,6 +30,11 @@ class RainmeterContractTests(unittest.TestCase):
                 self.assertTrue(raw.startswith(b"\xff\xfe"))
                 self.assertNotEqual(raw[2:4], b"\xff\xfe")
                 path.read_text(encoding="utf-16")
+
+    def test_skin_section_names_are_unique(self) -> None:
+        for path in (MAIN_SKIN, SETTINGS_SKIN, TASKS_SKIN):
+            names = re.findall(r"(?m)^\[([^]]+)\]$", path.read_text(encoding="utf-16"))
+            self.assertEqual(len(names), len(set(names)), path.name)
 
     def test_rainmeter_protocol_has_28_fields(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
@@ -121,9 +134,13 @@ class RainmeterContractTests(unittest.TestCase):
         doctor = (ROOT / "win" / "codex_status_server" / ".internal" / "service-doctor.ps1").read_text(
             encoding="utf-8-sig"
         )
-        self.assertIn("migrate-installed-variables.ps1", installer)
-        self.assertIn('-ServiceRoot "%~dp0."', installer)
-        self.assertIn('copy /Y "%USER_VARIABLES%" "%DST%\\@Resources\\variables.inc.backup-%STAMP%"', installer)
+        install_script = (ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "install-skin.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertIn("install-skin.ps1", installer)
+        self.assertIn("migrate-installed-variables.ps1", install_script)
+        self.assertIn('-ProjectRoot "%~dp0."', installer)
+        self.assertIn("Copy-Item -LiteralPath $variables -Destination $backup", install_script)
         self.assertIn("127.0.0.1:8765/rainmeter", migration)
         self.assertIn("status-server\\.log\\.\\d+", start)
         self.assertIn("status-server-(?:output|error)\\.log", start)
@@ -131,7 +148,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("Test-ProjectStatusProcess", doctor)
         self.assertIn("service_version", doctor)
         self.assertIn("protocol_version", doctor)
-        self.assertIn('& $StartScript -HostName "127.0.0.1" -Port $ExpectedPort', doctor)
+        self.assertIn("& $StartScript -HostName $launchSettings.HostName -Port $ExpectedPort", doctor)
         self.assertNotIn("if (-not $expectedHealth) {", doctor)
 
     def test_new_chinese_powershell_scripts_keep_utf8_bom(self) -> None:
@@ -151,7 +168,8 @@ class RainmeterContractTests(unittest.TestCase):
         launcher = (service_dir / "启动状态服务.command").read_text(encoding="utf-8")
         background = (internal / "start-background.command").read_text(encoding="utf-8")
         stop = (internal / "stop.command").read_text(encoding="utf-8")
-        self.assertIn("0.0.0.0", launcher)
+        self.assertIn("CODEX_STATUS_HOST", launcher)
+        self.assertIn("0.0.0.0", background)
         self.assertIn("/health", background)
         self.assertIn("codex-traffic-light-status", background)
         self.assertIn("status-server.pid", stop)
@@ -186,10 +204,11 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("StringIndex=21", tasks)
         expression = next(line[7:] for line in tasks.splitlines() if line.startswith("RegExp="))
         self.assertIsNotNone(re.compile(expression).fullmatch(build_tasks_payload({"active_tasks": []})))
-        self.assertIn("体检并修复服务", settings)
-        self.assertIn("任务通知设置", settings)
+        self.assertIn("只读服务体检", settings)
+        self.assertIn("修复本机服务", settings)
+        self.assertIn("本机任务通知", settings)
         self.assertIn("[MeasureServiceVersionParent]", main)
-        self.assertIn("IfMatch=^0\\.4\\.0$", main)
+        self.assertIn("IfMatch=^0\\.5\\.0$", main)
         self.assertIn("[MeterVersionWarning]", main)
         self.assertIn("[MeterTaskClickOverlay]", main)
 
@@ -206,7 +225,7 @@ class RainmeterContractTests(unittest.TestCase):
         win_background = (ROOT / "win" / "codex_status_server" / ".internal" / "start-server-background.ps1").read_text(
             encoding="utf-8-sig"
         )
-        self.assertIn('PORT="${PORT:-8767}"', mac_background)
+        self.assertIn('PORT="${PORT:-${CODEX_STATUS_PORT:-$SAVED_PORT}}"', mac_background)
         self.assertIn("[int]$Port = 8767", win_background)
 
     def test_task_card_and_dynamic_credits_are_present(self) -> None:
@@ -225,7 +244,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("SkinHeight=736", VARIABLES.read_text(encoding="utf-16"))
 
     def test_task_card_has_compact_five_row_layout(self) -> None:
-        text = MAIN_SKIN.read_text(encoding="utf-16")
+        text = base_scale_geometry(MAIN_SKIN.read_text(encoding="utf-16"))
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
 
         panel = sections["MeterTaskPanel"]
@@ -272,7 +291,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("Hidden=1", parallel)
 
     def test_compact_context_is_left_aligned_with_other_rows(self) -> None:
-        text = MAIN_SKIN.read_text(encoding="utf-16")
+        text = base_scale_geometry(MAIN_SKIN.read_text(encoding="utf-16"))
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
         context = sections["MeterContext"]
         self.assertIn("X=46", context)
@@ -292,7 +311,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn(r"InlinePattern=^云端(?:落后|有更新).*$", sections["MeterGitState"])
 
     def test_primary_usage_delta_does_not_overlap_main_value(self) -> None:
-        text = MAIN_SKIN.read_text(encoding="utf-16")
+        text = base_scale_geometry(MAIN_SKIN.read_text(encoding="utf-16"))
         sections = {name: body for name, body in re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text)}
         value = sections["MeterUsagePrimaryValue"]
         pill = sections["MeterUsagePrimaryDeltaPill"]
@@ -303,6 +322,105 @@ class RainmeterContractTests(unittest.TestCase):
         pill_height = int(re.search(r"Shape=Rectangle 0,0,\d+,(\d+),", pill).group(1))
 
         self.assertLessEqual(pill_y + pill_height, value_center_y - value_height // 2)
+
+    def test_connectivity_is_visible_and_independent_of_task_timestamp(self) -> None:
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = dict(re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text))
+        self.assertNotIn("Hidden=1", sections["MeterConnection"])
+        self.assertIn("Failure()", sections["MeasureStatusParent"])
+        self.assertIn("Success()", sections["MeasureStatusParent"])
+        script = (ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "connection-state.lua").read_text()
+        self.assertIn("lastSuccess = os.time()", script)
+        self.assertIn("age >= math.max(3, timeout)", script)
+        self.assertNotIn("MeasureUpdatedAt", script)
+        self.assertIn("MeterIdleLight", script)
+        self.assertIn("ConnectionOnline", sections["MeasureIdleChase"])
+
+    def test_scaled_layout_keeps_click_regions_with_visual_content(self) -> None:
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = dict(re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text))
+        self.assertNotIn("TransformationMatrix=", text)
+        for name in ("MeterTitle", "MeterTaskPanel", "MeterTaskClickOverlay", "MeterUsagePrimaryValue"):
+            self.assertIn("#SkinScale#", sections[name], name)
+        self.assertEqual(
+            re.search(r"(?m)^Shape=(.+)$", sections["MeterTaskClickOverlay"]).group(1).split(" | ")[0],
+            re.search(r"(?m)^Shape=(.+)$", sections["MeterTaskPanel"]).group(1).split(" | ")[0],
+        )
+        for name, body in sections.items():
+            if re.search(r"(?m)^Meter=", body):
+                self.assertNotRegex(body, r"(?m)^(?:X|Y|W|H|FontSize)=\d+$", name)
+
+    def test_setting_refresh_runs_after_write_and_not_on_timer(self) -> None:
+        text = SETTINGS_SKIN.read_text(encoding="utf-16")
+        self.assertNotIn("[!Delay", text)
+        for name in (
+            "set-status-url.ps1",
+            "set-skin-size.ps1",
+            "set-background-alpha.ps1",
+            "set-text-color.ps1",
+            "set-usage-panel-alpha.ps1",
+            "toggle-idle-chase.ps1",
+        ):
+            content = (ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / name).read_text(encoding="utf-8-sig")
+            self.assertGreater(content.rindex("Refresh-CodexSkins"), content.rindex("Set-Content"), name)
+
+    def test_windows_restart_preserves_address_and_quotes_script_path(self) -> None:
+        internal = ROOT / "win" / "codex_status_server" / ".internal"
+        start = (internal / "start-server-background.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("-ArgumentList @('\"' + $ServerFile + '\"')", start)
+        self.assertIn("Save-ServiceLaunchSettings $ServiceDir $HostName $Port", start)
+        notifications = (
+            ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "toggle-notifications.ps1"
+        ).read_text(encoding="utf-8-sig")
+        self.assertIn("-HostName $launchSettings.HostName -Port $launchSettings.Port", notifications)
+        self.assertIn("IsLoopback", notifications)
+        self.assertNotIn("& $DoctorScript -Repair", notifications)
+        launcher = (internal / "install-login-autostart.ps1").read_text(encoding="utf-8-sig")
+        self.assertNotIn("-HostName 127.0.0.1", launcher)
+
+    @unittest.skipUnless(shutil.which("pwsh") or shutil.which("powershell.exe"), "PowerShell is unavailable")
+    def test_powershell_parser_accepts_all_platform_scripts(self) -> None:
+        executable = shutil.which("pwsh") or shutil.which("powershell.exe")
+        scripts = [*ROOT.glob("rainmeter/**/*.ps1"), *ROOT.glob("win/**/.internal/*.ps1")]
+        for path in scripts:
+            literal = str(path).replace("'", "''")
+            command = (
+                "$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile('"
+                + literal
+                + "',[ref]$tokens,[ref]$errors)|Out-Null;if($errors){$errors|Out-String|Write-Output;exit 1}"
+            )
+            completed = subprocess.run(
+                [executable, "-NoProfile", "-Command", command], capture_output=True, text=True, timeout=15
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    @unittest.skipUnless(shutil.which("pwsh") or shutil.which("powershell.exe"), "PowerShell is unavailable")
+    def test_skin_path_resolver_uses_explicit_and_portable_config(self) -> None:
+        executable = shutil.which("pwsh") or shutil.which("powershell.exe")
+        helper = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "rainmeter-paths.ps1"
+        with tempfile.TemporaryDirectory(prefix="traffic light skin ") as temporary:
+            directory = Path(temporary)
+            config = directory / "Rainmeter.ini"
+            expected = directory / "Custom Skins"
+            config.write_text("[Rainmeter]\nSkinPath=" + str(expected) + "\n", encoding="utf-16")
+
+            def quote(value: object) -> str:
+                return str(value).replace("'", "''")
+
+            command = (
+                ". '"
+                + quote(helper)
+                + "';function Get-CimInstance {};$a=Get-RainmeterSkinPath -SettingsPath '"
+                + quote(config)
+                + "';$b=Get-RainmeterSkinPath -SkinPath '"
+                + quote(expected)
+                + "';Write-Output $a;Write-Output $b"
+            )
+            result = subprocess.run(
+                [executable, "-NoProfile", "-Command", command], capture_output=True, text=True, timeout=15
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), [str(expected), str(expected)])
 
 
 if __name__ == "__main__":

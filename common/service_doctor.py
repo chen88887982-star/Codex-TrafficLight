@@ -32,11 +32,14 @@ def validate_health(payload: object) -> list[str]:
 
 def diagnose(service_dir: Path, port: int) -> dict[str, object]:
     issues: list[str] = []
+    warnings: list[str] = []
     health: object = None
     try:
         with build_opener(ProxyHandler({})).open(f"http://127.0.0.1:{port}/health", timeout=3) as response:
             health = json.load(response)
         issues.extend(validate_health(health))
+        if isinstance(health, dict) and health.get("status") == "degraded":
+            warnings.extend(str(item) for item in health.get("reasons", []) if isinstance(item, str))
     except (OSError, URLError, ValueError) as exc:
         issues.append(f"健康接口不可用：{type(exc).__name__}")
     try:
@@ -67,6 +70,18 @@ def diagnose(service_dir: Path, port: int) -> dict[str, object]:
                 autostart.append(path.name)
         except OSError:
             continue
+    components = health.get("components", {}) if isinstance(health, dict) else {}
+    checks = {
+        "listener": {"status": "ok" if listening else "error", "label": "端口正在监听" if listening else "端口未监听"},
+        "process": {"status": "ok" if process_state == "本项目服务正在运行" else "error", "label": process_state},
+        "version": {
+            "status": "ok" if isinstance(health, dict) and not validate_health(health) else "error",
+            "label": f"服务 {SERVICE_VERSION} / 协议 {RAINMETER_PROTOCOL_VERSION}",
+        },
+        "monitor": components.get("monitor", {"status": "unknown", "label": "未返回监控详情"}),
+        "usage": components.get("usage", {"status": "unknown", "label": "未返回额度详情"}),
+        "git": components.get("git", {"status": "unknown", "label": "未返回 Git 详情"}),
+    }
     return {
         "ok": not issues,
         "port": port,
@@ -74,9 +89,14 @@ def diagnose(service_dir: Path, port: int) -> dict[str, object]:
         "process": process_state,
         "health": health,
         "issues": issues,
+        "warnings": warnings,
+        "checks": checks,
+        "mode": "check",
         "login_autostart_files": autostart,
         "log_directory": str(service_dir / ".runtime"),
-        "next_step": "检查通过"
+        "next_step": "基础运行检查通过；存在降级项，请查看 warnings 与分项检查"
+        if not issues and warnings
+        else "检查通过"
         if not issues
         else "查看运行日志；通过本项目停止入口核验旧进程，再使用启动入口重启。不会自动结束占用端口的进程。",
     }

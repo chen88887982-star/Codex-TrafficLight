@@ -26,7 +26,8 @@ $tasksUrl = if ($statusMatch.Success) {
 }
 
 if ($content -match "(?m)^TasksUrl=") {
-  $content = [regex]::Replace($content, "(?m)^TasksUrl=.*$", "TasksUrl=$tasksUrl")
+  # Preserve customized remote endpoints; only upgrade the known legacy local URL.
+  $content = $content.Replace('http://127.0.0.1:8765/tasks', 'http://127.0.0.1:8767/tasks')
 } else {
   $content = $content.TrimEnd() + [Environment]::NewLine + "TasksUrl=$tasksUrl" + [Environment]::NewLine
 }
@@ -36,4 +37,26 @@ if ($content -match "(?m)^ServiceRoot=") {
   $content = $content.TrimEnd() + [Environment]::NewLine + "ServiceRoot=$resolvedRoot" + [Environment]::NewLine
 }
 
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'skin-settings.ps1')
+if ($content -notmatch '(?m)^SkinScale=') {
+  $widthMatch = [regex]::Match($content, '(?m)^SkinWidth=(\d+)')
+  $scale = if ($widthMatch.Success) { [Math]::Max(0.75, [Math]::Min(1.8, [int]$widthMatch.Groups[1].Value / 208)) } else { 1 }
+  $content = Set-SkinVariable $content 'SkinScale' $scale.ToString([Globalization.CultureInfo]::InvariantCulture)
+}
+if ($content -notmatch '(?m)^DashboardUrl=') {
+  $uri = if ($statusMatch.Success) { [UriBuilder]$statusMatch.Groups[1].Value } else { [UriBuilder]'http://127.0.0.1:8767/' }
+  $uri.Path = $uri.Path -replace '/rainmeter/?$', '/'
+  $uri.Query = ''
+  $uri.Fragment = ''
+  $content = Set-SkinVariable $content 'DashboardUrl' $uri.Uri.AbsoluteUri
+}
+if ($content -notmatch '(?m)^HistoryUrl=') {
+  $dashboardMatch = [regex]::Match($content, '(?m)^DashboardUrl=([^\r\n]+)')
+  $history = [UriBuilder]$dashboardMatch.Groups[1].Value
+  $history.Fragment = 'history'
+  $content = Set-SkinVariable $content 'HistoryUrl' $history.Uri.AbsoluteUri
+}
+foreach ($entry in @{ OfflineAfterSeconds = '10'; RailLineColor = '52,196,218,92' }.GetEnumerator()) {
+  if ($content -notmatch ('(?m)^' + $entry.Key + '=')) { $content = Set-SkinVariable $content $entry.Key $entry.Value }
+}
 [IO.File]::WriteAllText($resolvedVariables, $content, [Text.Encoding]::Unicode)

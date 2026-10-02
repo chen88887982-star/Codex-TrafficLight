@@ -8,6 +8,13 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServiceDir = Split-Path -Parent $ScriptDir
 $ProjectRoot = (Resolve-Path (Join-Path $ServiceDir "..\..")).Path
+. (Join-Path $ScriptDir 'service-settings.ps1')
+$savedSettings = Get-ServiceLaunchSettings $ServiceDir
+if (-not $PSBoundParameters.ContainsKey('HostName')) { $HostName = $savedSettings.HostName }
+if (-not $PSBoundParameters.ContainsKey('Port')) { $Port = $savedSettings.Port }
+if ($env:CODEX_STATUS_HOST) { $HostName = $env:CODEX_STATUS_HOST }
+if ($env:CODEX_STATUS_PORT) { $Port = [int]$env:CODEX_STATUS_PORT }
+if ($Port -lt 1 -or $Port -gt 65535 -or $HostName -notmatch '^[a-zA-Z0-9.:_-]+$') { throw 'Invalid HostName or Port.' }
 $RuntimeDir = Join-Path $ServiceDir ".runtime"
 $ServerFile = Join-Path $ScriptDir "server.py"
 $StdoutFile = Join-Path $RuntimeDir "status-server-output.log"
@@ -48,7 +55,7 @@ function Get-StatusHealth {
     $health = Invoke-RestMethod -Uri $HealthUri -TimeoutSec 2
     if (
       $health.service -eq $ExpectedService -and
-      $health.service_version -eq "0.4.0" -and
+      $health.service_version -eq "0.5.0" -and
       [int]$health.protocol_version -eq 2 -and
       $health.status -in @("ok", "degraded", "error")
     ) {
@@ -60,8 +67,15 @@ function Get-StatusHealth {
 }
 
 $health = Get-StatusHealth
+if ($null -ne $health -and $PSBoundParameters.ContainsKey('HostName')) {
+  $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($listener -and $listener.LocalAddress -ne $HostName) {
+    & (Join-Path $ScriptDir 'stop-server.ps1') | Out-Null
+    $health = Get-StatusHealth
+  }
+}
 if ($null -ne $health) {
-  Write-Output "[OK] 8767 状态服务已在运行，未重复启动。"
+  Write-Output "[OK] $Port 状态服务已在运行，未重复启动。"
   exit 0
 }
 
@@ -89,7 +103,7 @@ if (-not $PythonExe) {
 
 $env:HOST = $HostName
 $env:PORT = [string]$Port
-$process = Start-Process -FilePath $PythonExe -ArgumentList @($ServerFile) -WorkingDirectory $ScriptDir `
+$process = Start-Process -FilePath $PythonExe -ArgumentList @('"' + $ServerFile + '"') -WorkingDirectory $ScriptDir `
   -WindowStyle Hidden -RedirectStandardOutput $StdoutFile -RedirectStandardError $StderrFile -PassThru
 
 $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
@@ -103,7 +117,8 @@ do {
       $servicePid = [int]$pidRecord.pid
     } catch {
     }
-    Write-Output "[OK] 8767 状态服务已隐藏运行，PID=$servicePid，健康状态=$($health.status)。"
+    Save-ServiceLaunchSettings $ServiceDir $HostName $Port
+    Write-Output "[OK] $Port 状态服务已隐藏运行，PID=$servicePid，健康状态=$($health.status)。"
     exit 0
   }
   if ($process.HasExited) {

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#101918">
+  <title>Codex 状态看板</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+  <script src="/dashboard/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/dashboard"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Codex <strong>状态看板</strong></span></a>
+      <div class="top-actions"><span id="connection" class="badge muted">正在连接</span><button id="access-button" class="quiet">访问设置</button></div>
+    </header>
+
+    <section id="access-panel" class="panel access-panel" hidden>
+      <div><h2>连接这台状态服务</h2><p>局域网访问时填写服务的访问令牌。令牌仅保存在当前浏览器标签页。</p></div>
+      <form id="access-form" class="inline-form"><label class="grow">访问令牌<input id="access-token" type="password" autocomplete="off" maxlength="4096" placeholder="输入 STATUS_ACCESS_TOKEN"></label><button type="submit">连接</button><button id="clear-access" class="quiet" type="button">清除令牌</button></form>
+    </section>
+    <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+    <div class="page-heading"><div><p class="eyebrow">工作进展 · 一眼掌握</p><h1 id="page-title">这台电脑的工作状态</h1><p id="last-connected" class="subtle">等待第一次读取</p></div><label class="source-picker">查看设备<select id="source-select"><option value="local">本机服务</option></select></label></div>
+
+    <nav class="tabs" aria-label="看板内容"><button class="tab selected" data-tab="overview" aria-selected="true">当前任务</button><button class="tab" data-tab="history" aria-selected="false">任务历史</button><button class="tab" data-tab="devices" aria-selected="false">设备</button></nav>
+
+    <main>
+      <section id="overview-view" class="view">
+        <section class="hero panel"><div class="hero-main"><span id="state-dot" class="state-dot idle" aria-hidden="true"></span><div><p id="task-project" class="eyebrow">等待任务</p><h2 id="task-title">正在读取状态</h2><p id="task-stage" class="subtle">连接后显示当前任务</p></div></div><div class="hero-meta"><span id="task-state" class="badge muted">--</span><strong id="task-elapsed">00:00</strong><span id="task-model" class="subtle">--</span></div></section>
+
+        <section class="metrics-grid" aria-label="任务与额度">
+          <article class="panel quota-card"><div class="card-heading"><h3>主要额度窗口</h3><span id="primary-window" class="subtle">--</span></div><div class="quota-value"><strong id="primary-quota">--</strong><span>剩余</span></div><div class="progress"><i id="primary-bar"></i></div><p id="primary-reset" class="subtle">等待额度快照</p></article>
+          <article class="panel quota-card"><div class="card-heading"><h3>次要额度窗口</h3><span id="secondary-window" class="subtle">--</span></div><div class="quota-value"><strong id="secondary-quota">--</strong><span>剩余</span></div><div class="progress"><i id="secondary-bar"></i></div><p id="secondary-reset" class="subtle">等待额度快照</p></article>
+          <article class="panel tokens-card"><div class="card-heading"><h3>当前任务</h3><span id="active-count" class="badge muted">0 个活动任务</span></div><p id="task-tokens" class="large-text">-- tokens</p><p id="task-context" class="subtle">上下文 --</p><p id="account-change" class="subtle">期间账户变化 --</p></article>
+        </section>
+        <div class="refresh-row"><p id="usage-sync" class="subtle">额度尚未读取</p><button id="refresh-usage" class="quiet">刷新账户额度</button></div>
+
+        <section class="content-grid">
+          <article class="panel"><div class="section-heading"><div><h2>运行检查</h2><p class="subtle">连接、监控、额度与 Git 分别显示</p></div><span id="service-version" class="subtle">--</span></div><div id="health-list" class="health-list"></div></article>
+          <article class="panel"><div class="section-heading"><div><h2>Git 状态</h2><p id="git-branch" class="subtle">等待仓库信息</p></div><span id="git-dirty" class="badge muted">--</span></div><dl class="git-values"><div><dt>本次变更</dt><dd id="git-task">--</dd></div><div><dt>本地修改</dt><dd id="git-local">--</dd></div><div><dt>待推送</dt><dd id="git-push">--</dd></div><div><dt>待拉取</dt><dd id="git-pull">--</dd></div><div><dt>远端核验</dt><dd id="git-remote">--</dd></div></dl></article>
+        </section>
+
+        <section class="panel tasks-panel"><div class="section-heading"><div><h2>活动任务</h2><p id="task-control-note" class="subtle">选择关注或固定显示。忽略本轮仅影响看板，任务仍继续运行。</p></div><button id="automatic-selection" class="quiet">恢复自动选择</button></div><div id="task-list" class="task-list"><p class="empty">暂无活动任务</p></div></section>
+      </section>
+
+      <section id="history-view" class="view" hidden>
+        <section class="panel"><div class="section-heading"><div><h2>本机任务历史</h2><p class="subtle">按项目与时间复盘耗时、tokens 和异常</p></div><button id="refresh-history" class="quiet">刷新历史</button></div>
+          <form id="history-filter" class="filter-grid"><label>项目名称<input id="history-project" placeholder="填写记录中的完整项目名称" maxlength="256"></label><label>任务状态<select id="history-status"><option value="">全部状态</option><option value="success">已完成</option><option value="error">异常</option><option value="ignored">已忽略</option><option value="idle">空闲</option><option value="running">运行中</option><option value="waiting">等待确认</option></select></label><label>开始日期<input id="history-since" type="date"></label><label>结束日期<input id="history-until" type="date"></label><button type="submit">筛选</button></form>
+          <div class="table-scroll"><table class="history-table"><thead><tr><th>任务 / 项目</th><th>状态</th><th>开始时间</th><th>耗时</th><th>Tokens</th><th>变更</th></tr></thead><tbody id="history-list"></tbody></table></div><p id="history-empty" class="empty">正在读取任务历史</p><div class="pagination"><span id="history-count" class="subtle">--</span><div><button id="history-previous" class="quiet" disabled>上一页</button><button id="history-next" class="quiet" disabled>下一页</button></div></div>
+        </section>
+      </section>
+
+      <section id="devices-view" class="view" hidden>
+        <section class="panel"><div class="section-heading"><div><h2>我的设备</h2><p class="subtle">每台设备单独显示账户额度与连接状态</p></div><span id="device-count" class="badge muted">1 台设备</span></div><div id="device-list" class="device-list"></div></section>
+        <section class="panel add-device-panel"><h2>添加状态服务</h2><p class="subtle">填写另一台电脑已经运行的服务地址，例如 http://192.168.1.20:8767。最多添加 8 台。</p><form id="peer-form" class="peer-form"><label>设备名称<input id="peer-name" required maxlength="80" placeholder="例如 工作室 Windows"></label><label>服务地址<input id="peer-url" type="url" required maxlength="2048" placeholder="http://192.168.1.20:8767"></label><label>访问令牌<input id="peer-token" type="password" autocomplete="off" maxlength="4096" placeholder="对端服务的访问令牌"></label><button type="submit">添加设备</button></form></section>
+      </section>
+    </main>
+    <footer><span>Codex Traffic Light</span><span id="footer-state">本机状态服务 · 自动刷新</span></footer>
+  </div>
+</body>
+</html>

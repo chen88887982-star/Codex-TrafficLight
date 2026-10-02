@@ -4,37 +4,66 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import json
-import math
 import os
-import queue
-import shlex
 import shutil
-import subprocess
+import socket
 import sys
 import threading
 import time
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BASE_DIR = Path(os.environ.get("CODEX_STATUS_BASE_DIR", PROJECT_ROOT / "mac" / "codex_status_server")).resolve()
+BASE_DIR = Path(
+    os.environ.get("CODEX_STATUS_BASE_DIR", PROJECT_ROOT / "mac" / "codex_status_server" / ".runtime")
+).resolve()
 COMMON_DIR = PROJECT_ROOT / "common"
 if str(COMMON_DIR) not in sys.path:
     sys.path.insert(0, str(COMMON_DIR))
 
+import service_monitor  # noqa: E402
+import service_state  # noqa: E402
 from codex_telemetry import CodexTelemetry  # noqa: E402
 from notifications import NotificationManager  # noqa: E402
+from peer_services import PeerServiceManager  # noqa: E402
+from service_config import (  # noqa: E402
+    read_env_bool as read_env_bool,
+)
+from service_config import (  # noqa: E402
+    read_env_choice as read_env_choice,
+)
+from service_config import (  # noqa: E402
+    read_env_float as read_env_float,
+)
+from service_config import (  # noqa: E402
+    read_env_int as read_env_int,
+)
+from service_config import (  # noqa: E402
+    read_env_interval as read_env_interval,
+)
+from service_config import (  # noqa: E402
+    read_env_patterns as read_env_patterns,
+)
+from service_http import StatusHandler as StatusHandler  # noqa: E402
 from service_metadata import RAINMETER_PROTOCOL_VERSION, SERVICE_NAME, SERVICE_VERSION  # noqa: E402
 from service_runtime import (  # noqa: E402
-    IntervalScheduler,
-    JsonlFollower,
     RotatingTextLog,
     SessionFileIndex,
     SingleFlightWorker,
-    TaskRefreshTracker,
     atomic_write_json,
+)
+from state_store import JsonObjectStore  # noqa: E402
+from usage_client import query_account_usage, split_command  # noqa: E402
+from usage_data import (  # noqa: E402
+    epoch_value,
+    extract_credits_label,
+    format_age_label,
+    format_reset_label,
+    parse_timestamp,
+    parse_usage_window,
+    remaining_value,
+    used_percent_value,
 )
 
 
@@ -51,73 +80,6 @@ def resolve_expose_task_details(settings: dict[str, object], environ: dict[str, 
     configured = settings.get("expose_task_details", True)
     default = "1" if configured is not False else "0"
     return environ.get("EXPOSE_TASK_DETAILS", default) == "1"
-
-
-def read_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
-    raw = os.environ.get(name)
-    try:
-        value = int(raw) if raw is not None else default
-    except ValueError:
-        print(f"Invalid {name}={raw!r}; using {default}", file=sys.stderr)
-        return default
-    if not minimum <= value <= maximum:
-        print(f"Out-of-range {name}={value}; using {default} ({minimum}..{maximum})", file=sys.stderr)
-        return default
-    return value
-
-
-def read_env_interval(name: str, default: int, minimum_positive: int, maximum: int) -> int:
-    raw = os.environ.get(name)
-    try:
-        value = int(raw) if raw is not None else default
-    except ValueError:
-        print(f"Invalid {name}={raw!r}; using {default}", file=sys.stderr)
-        return default
-    if value == 0 or minimum_positive <= value <= maximum:
-        return value
-    print(
-        f"Out-of-range {name}={value}; using {default} (0 or {minimum_positive}..{maximum})",
-        file=sys.stderr,
-    )
-    return default
-
-
-def read_env_float(name: str, default: float, minimum: float, maximum: float) -> float:
-    raw = os.environ.get(name)
-    try:
-        value = float(raw) if raw is not None else default
-    except ValueError:
-        print(f"Invalid {name}={raw!r}; using {default:g}", file=sys.stderr)
-        return default
-    if not math.isfinite(value) or not minimum <= value <= maximum:
-        print(f"Out-of-range {name}={value}; using {default:g} ({minimum:g}..{maximum:g})", file=sys.stderr)
-        return default
-    return value
-
-
-def read_env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    normalized = raw.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    print(f"Invalid {name}={raw!r}; using {int(default)}", file=sys.stderr)
-    return default
-
-
-def read_env_choice(name: str, default: str, choices: set[str]) -> str:
-    value = os.environ.get(name, default).strip().lower()
-    if value in choices:
-        return value
-    print(f"Invalid {name}={value!r}; using {default}", file=sys.stderr)
-    return default
-
-
-def read_env_patterns(name: str, default: str) -> tuple[str, ...]:
-    return tuple(pattern.strip() for pattern in os.environ.get(name, default).split(",") if pattern.strip())
 
 
 PRIVATE_SETTINGS = load_private_settings()
@@ -139,6 +101,7 @@ SESSION_DISCOVERY_INTERVAL_SECONDS = read_env_float("SESSION_DISCOVERY_INTERVAL_
 RUNNING_STALE_SECONDS = read_env_int("RUNNING_STALE_SECONDS", 300, 5, 86400)
 USAGE_STALE_SECONDS = read_env_int("USAGE_STALE_SECONDS", 900, 30, 86400)
 USAGE_REFRESH_INTERVAL_SECONDS = read_env_interval("USAGE_REFRESH_INTERVAL_SECONDS", 900, 60, 86400)
+USAGE_BUSY_REFRESH_SECONDS = read_env_interval("USAGE_BUSY_REFRESH_SECONDS", 120, 30, 86400)
 ACCOUNT_QUERY_TIMEOUT_SECONDS = read_env_float("ACCOUNT_QUERY_TIMEOUT_SECONDS", 45.0, 1.0, 300.0)
 LOG_MAX_BYTES = read_env_int("LOG_MAX_BYTES", 5 * 1024 * 1024, 1024, 1024 * 1024 * 1024)
 LOG_BACKUP_COUNT = read_env_int("LOG_BACKUP_COUNT", 3, 0, 100)
@@ -174,6 +137,7 @@ TELEMETRY = CodexTelemetry(
     git_exclude_patterns=GIT_STATS_EXCLUDE,
     include_mode_only=GIT_INCLUDE_MODE_ONLY,
     background_git_statistics=True,
+    history_path=BASE_DIR / "task-history.sqlite3",
 )
 
 DEFAULT_STATUS = {
@@ -214,6 +178,8 @@ DEFAULT_USAGE = {
 }
 
 
+PEER_SERVICES = PeerServiceManager(BASE_DIR / "peer-services.json")
+state_store = JsonObjectStore()
 status_lock = threading.RLock()
 usage_lock = threading.RLock()
 health_lock = threading.RLock()
@@ -314,6 +280,59 @@ def service_health_snapshot(
         if level == "ok":
             level = "degraded"
         reasons.append(f"Git {remote_error or '云端未确认'}")
+    data_errors = state_store.errors()
+    if telemetry.get("history_last_error"):
+        data_errors.append("任务历史保存失败，当前状态仍可查看")
+    if data_errors:
+        if level == "ok":
+            level = "degraded"
+        reasons.extend(data_errors)
+
+    components = {
+        "listener": {"status": "ok", "label": "接口可访问"},
+        "monitor": {
+            "status": "disabled"
+            if not AUTO_MONITOR
+            else (
+                "error"
+                if not CODEX_SESSIONS_DIR.exists()
+                or heartbeat_age > max(5.0, SESSION_DISCOVERY_INTERVAL_SECONDS * 2, MONITOR_INTERVAL_SECONDS * 10)
+                and monitor.get("initialized")
+                else "ok"
+                if monitor.get("initialized")
+                else "pending"
+            ),
+            "label": "未启用自动监控"
+            if not AUTO_MONITOR
+            else "已监听会话"
+            if monitor.get("initialized")
+            else "正在初始化",
+        },
+        "usage": {
+            "status": "refreshing"
+            if worker.get("running")
+            else "degraded"
+            if account.get("last_error")
+            or not usage.get("available")
+            or usage_timestamp
+            and now - usage_timestamp > USAGE_STALE_SECONDS
+            else "ok",
+            "label": "正在查询" if worker.get("running") else usage.get("sync_label", "等待额度"),
+        },
+        "git": {
+            "status": "degraded"
+            if remote_status in {"different", "unconfirmed"} or telemetry.get("git_last_error")
+            else "pending"
+            if remote_status == "checking"
+            else "ok",
+            "label": str((task_data or {}).get("git_state_label") or "等待项目"),
+        },
+        "version": {"status": "ok", "label": f"服务 {SERVICE_VERSION} / 协议 {RAINMETER_PROTOCOL_VERSION}"},
+        "runtime_data": {
+            "status": "degraded" if data_errors else "ok",
+            "label": data_errors[0] if data_errors else "运行数据正常",
+        },
+    }
 
     label = "服务正常" if level == "ok" else f"服务{'异常' if level == 'error' else '降级'} · {reasons[0]}"
     return {
@@ -332,6 +351,7 @@ def service_health_snapshot(
         "usage_worker": worker,
         "usage_query": account,
         "telemetry": telemetry,
+        "components": components,
     }
 
 
@@ -391,91 +411,19 @@ def is_approval_review_event(event: dict[str, object]) -> bool:
 
 
 def write_status(status: str, message: str) -> None:
-    with status_lock:
-        now = time.time()
-        previous = read_status() if STATUS_FILE.exists() else DEFAULT_STATUS
-        running_since = float(previous.get("running_since", 0) or 0)
-        last_elapsed_seconds = int(float(previous.get("last_elapsed_seconds", 0) or 0))
-        task_usage_start_primary = previous.get("task_usage_start_primary")
-        task_usage_start_secondary = previous.get("task_usage_start_secondary")
-        task_usage_end_primary = previous.get("task_usage_end_primary")
-        task_usage_end_secondary = previous.get("task_usage_end_secondary")
-        task_usage_label = str(previous.get("task_usage_label") or "期间账户变化 --")
-        task_usage_primary_label = str(previous.get("task_usage_primary_label") or "")
-        task_usage_secondary_label = str(previous.get("task_usage_secondary_label") or "")
-
-        if status in {"running", "waiting"}:
-            if previous.get("status") not in {"running", "waiting"} or running_since <= 0:
-                previous = {key: value for key, value in previous.items() if not key.startswith("usage_baseline_")}
-                running_since = now
-                task_usage_start_primary = None
-                task_usage_start_secondary = None
-                task_usage_end_primary = None
-                task_usage_end_secondary = None
-                task_usage_label = "期间账户变化 --"
-                task_usage_primary_label = ""
-                task_usage_secondary_label = ""
-        elif status == "success":
-            if running_since > 0:
-                last_elapsed_seconds = max(0, int(now - running_since))
-            running_since = 0.0
-        elif status in {"idle", "error"}:
-            running_since = 0.0
-            if status == "idle":
-                last_elapsed_seconds = 0
-
-        payload = {
-            **{key: value for key, value in previous.items() if key.startswith("usage_baseline_")},
-            "status": status,
-            "message": message,
-            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "running_since": running_since,
-            "last_elapsed_seconds": last_elapsed_seconds,
-            "task_usage_start_primary": task_usage_start_primary,
-            "task_usage_start_secondary": task_usage_start_secondary,
-            "task_usage_end_primary": task_usage_end_primary,
-            "task_usage_end_secondary": task_usage_end_secondary,
-            "task_usage_label": task_usage_label,
-            "task_usage_primary_label": task_usage_primary_label,
-            "task_usage_secondary_label": task_usage_secondary_label,
-        }
-        atomic_write_json(STATUS_FILE, payload)
+    return service_state.write_status(sys.modules[__name__], status, message)
 
 
 def read_status() -> dict[str, object]:
-    if not STATUS_FILE.exists():
-        return DEFAULT_STATUS.copy()
+    return service_state.read_status(sys.modules[__name__])
 
-    try:
-        with status_lock:
-            data = json.loads(STATUS_FILE.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        write_log(f"status.json read failed: {exc}")
-        return {
-            "status": "error",
-            "message": "status.json 读取失败",
-            "updated_at": DEFAULT_STATUS["updated_at"],
-        }
 
-    status = str(data.get("status", "idle"))
-    if status not in {"idle", "running", "waiting", "success", "error"}:
-        status = "error"
+def safe_number(value: object, default: float = 0.0) -> float:
+    return service_state.safe_number(sys.modules[__name__], value, default)
 
-    return {
-        **{key: value for key, value in data.items() if key.startswith("usage_baseline_")},
-        "status": status,
-        "message": str(data.get("message", "")),
-        "updated_at": str(data.get("updated_at", "")),
-        "running_since": data.get("running_since", 0) or 0,
-        "last_elapsed_seconds": data.get("last_elapsed_seconds", 0) or 0,
-        "task_usage_start_primary": data.get("task_usage_start_primary"),
-        "task_usage_start_secondary": data.get("task_usage_start_secondary"),
-        "task_usage_end_primary": data.get("task_usage_end_primary"),
-        "task_usage_end_secondary": data.get("task_usage_end_secondary"),
-        "task_usage_label": str(data.get("task_usage_label") or "期间账户变化 --"),
-        "task_usage_primary_label": str(data.get("task_usage_primary_label") or ""),
-        "task_usage_secondary_label": str(data.get("task_usage_secondary_label") or ""),
-    }
+
+def validate_status_data(data: dict[str, object]) -> dict[str, object]:
+    return service_state.validate_status_data(sys.modules[__name__], data)
 
 
 def clean_field(value: object) -> str:
@@ -485,7 +433,7 @@ def clean_field(value: object) -> str:
 def format_elapsed_seconds(seconds: object) -> str:
     try:
         total = max(0, int(float(seconds)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         total = 0
     hours, remainder = divmod(total, 3600)
     minutes, secs = divmod(remainder, 60)
@@ -496,65 +444,6 @@ def format_elapsed_seconds(seconds: object) -> str:
 
 def iter_recent_session_files(limit: int = 20) -> list[Path]:
     return SESSION_FILE_INDEX.recent(limit)
-
-
-def format_reset_label(epoch_seconds: object, *, always_time: bool = False) -> str:
-    try:
-        reset_at = datetime.fromtimestamp(int(epoch_seconds)).astimezone()
-    except (TypeError, ValueError, OSError):
-        return "--"
-    if always_time:
-        return reset_at.strftime("%H:%M")
-    now = datetime.now().astimezone()
-    if reset_at.date() == now.date():
-        return reset_at.strftime("%H:%M")
-    return f"{reset_at.month}月{reset_at.day}日 {reset_at:%H:%M}"
-
-
-def remaining_value(used_percent: object) -> int | None:
-    try:
-        remaining = 100 - float(used_percent)
-    except (TypeError, ValueError):
-        return None
-    return max(0, min(100, math.floor(remaining)))
-
-
-def used_percent_value(used_percent: object) -> float | None:
-    try:
-        used = float(used_percent)
-    except (TypeError, ValueError):
-        return None
-    return max(0.0, min(100.0, used))
-
-
-def epoch_value(epoch_seconds: object) -> int | None:
-    try:
-        return int(epoch_seconds)
-    except (TypeError, ValueError):
-        return None
-
-
-def parse_timestamp(value: object) -> float:
-    if not value:
-        return 0.0
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return 0.0
-
-
-def format_age_label(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    if seconds < 60:
-        return "刚刚"
-    minutes = int(seconds // 60)
-    if minutes < 60:
-        return f"{minutes} 分钟"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours} 小时"
-    days = hours // 24
-    return f"{days} 天"
 
 
 def format_sync_label(usage: dict[str, object]) -> str:
@@ -578,17 +467,11 @@ def format_sync_label(usage: dict[str, object]) -> str:
 
 
 def read_usage_cache() -> dict[str, object]:
-    with usage_lock:
-        try:
-            data = json.loads(USAGE_CACHE_FILE.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            return DEFAULT_USAGE.copy()
-        if data.get("source") not in {"app_server", "session_event"}:
-            return DEFAULT_USAGE.copy()
-        usage = DEFAULT_USAGE.copy()
-        usage.update(data)
-        usage["sync_label"] = format_sync_label(usage)
-        return usage
+    return service_state.read_usage_cache(sys.modules[__name__])
+
+
+def validate_usage_data(data: dict[str, object]) -> dict[str, object]:
+    return service_state.validate_usage_data(sys.modules[__name__], data)
 
 
 def public_usage(usage: dict[str, object]) -> dict[str, object]:
@@ -598,42 +481,7 @@ def public_usage(usage: dict[str, object]) -> dict[str, object]:
 
 
 def write_usage_cache(usage: dict[str, object]) -> dict[str, object]:
-    with usage_lock:
-        usage = usage.copy()
-        usage["cached_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-        usage["sync_label"] = format_sync_label(usage)
-        try:
-            atomic_write_json(USAGE_CACHE_FILE, usage)
-        except OSError as exc:
-            write_log(f"usage-cache.json write failed: {exc}")
-            return read_usage_cache()
-        return usage
-
-
-def parse_usage_window(window: object, prefix: str, *, session: bool = False) -> dict[str, object]:
-    window = window if isinstance(window, dict) else {}
-    used = window.get("used_percent" if session else "usedPercent")
-    reset = window.get("resets_at" if session else "resetsAt")
-    minutes = window.get("window_minutes" if session else "windowDurationMins")
-    minutes = epoch_value(minutes)
-    label = "主窗口" if prefix == "primary" else "第二窗口"
-    if minutes and minutes > 0:
-        if minutes % 1440 == 0:
-            label = f"{minutes // 1440}天额度"
-        elif minutes % 60 == 0:
-            label = f"{minutes // 60}小时额度"
-        else:
-            label = f"{minutes}分钟额度"
-    remaining = remaining_value(used)
-    return {
-        f"{prefix}_remaining_percent": f"{remaining}%" if remaining is not None else "",
-        f"{prefix}_remaining_value": remaining,
-        f"{prefix}_used_percent": used_percent_value(used),
-        f"{prefix}_resets_at": format_reset_label(reset) if reset else "",
-        f"{prefix}_resets_at_epoch": epoch_value(reset),
-        f"{prefix}_window_minutes": minutes,
-        f"{prefix}_window_label": label,
-    }
+    return service_state.write_usage_cache(sys.modules[__name__], usage)
 
 
 def usage_from_session_rate_limits(event: dict[str, object], path: Path) -> dict[str, object] | None:
@@ -685,23 +533,27 @@ def consider_session_usage_fallback(event: dict[str, object], path: Path) -> dic
     fallback = usage_from_session_rate_limits(event, path)
     if fallback is None:
         return None
-    current = read_usage_cache()
-    current_timestamp = parse_timestamp(current.get("updated_at"))
-    fallback_timestamp = parse_timestamp(fallback.get("updated_at"))
-    with health_lock:
-        query_failed = bool(usage_query_health.get("last_error"))
-    current_is_fresh_app_server = (
-        current.get("available")
-        and current.get("source") == "app_server"
-        and current_timestamp
-        and time.time() - current_timestamp <= USAGE_STALE_SECONDS
-        and not query_failed
-    )
-    if current_is_fresh_app_server:
-        return None
-    if current.get("available") and current_timestamp >= fallback_timestamp:
-        return None
-    return write_usage_cache(fallback)
+    with usage_lock:
+        current = read_usage_cache()
+        current_timestamp = parse_timestamp(current.get("updated_at"))
+        fallback_timestamp = parse_timestamp(fallback.get("updated_at"))
+        with health_lock:
+            query_failed = bool(usage_query_health.get("last_error"))
+        current_is_fresh_app_server = (
+            current.get("available")
+            and current.get("source") == "app_server"
+            and current_timestamp
+            and time.time() - current_timestamp <= USAGE_STALE_SECONDS
+            and not query_failed
+        )
+        if current_is_fresh_app_server:
+            return None
+        if current.get("available") and current_timestamp >= fallback_timestamp:
+            return None
+        try:
+            return write_usage_cache(fallback)
+        except OSError:
+            return None
 
 
 def latest_session_usage_fallback() -> dict[str, object] | None:
@@ -810,33 +662,9 @@ def build_tasks_payload(task_data: dict[str, object], limit: int = 5) -> str:
     return "|".join(fields)
 
 
-def extract_credits_label(usage: dict[str, object]) -> str:
-    """Read an optional credits balance without assuming a fixed experimental schema."""
-
-    keys = ("creditsBalance", "creditBalance", "remainingCredits", "balance")
-    pending: list[object] = [usage]
-    while pending:
-        current = pending.pop()
-        if not isinstance(current, dict):
-            continue
-        for key in keys:
-            value = current.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                return f"{value:g}"
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        credits = current.get("credits")
-        if isinstance(credits, dict):
-            pending.append(credits)
-        for value in current.values():
-            if isinstance(value, dict) and value is not credits:
-                pending.append(value)
-    return ""
-
-
 def resolve_codex_command() -> list[str]:
     if CODEX_COMMAND:
-        return shlex.split(CODEX_COMMAND, posix=os.name != "nt")
+        return split_command(CODEX_COMMAND, windows=os.name == "nt")
 
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA")
@@ -850,6 +678,15 @@ def resolve_codex_command() -> list[str]:
     if command_on_path:
         return [command_on_path]
 
+    if sys.platform == "darwin":
+        for candidate in (
+            Path("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
+            Path("/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
+            Path("/Applications/Codex.app/Contents/Resources/codex"),
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return [str(candidate)]
+
     raise RuntimeError(
         "Codex CLI was not found. Install/open Codex Desktop, add codex to PATH, "
         "or set CODEX_COMMAND to the full Codex executable path."
@@ -857,89 +694,13 @@ def resolve_codex_command() -> list[str]:
 
 
 def query_live_account_usage() -> dict[str, object]:
-    process = subprocess.Popen(
-        resolve_codex_command() + ["app-server", "--stdio"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
+    return query_account_usage(
+        resolve_codex_command(),
+        ACCOUNT_QUERY_TIMEOUT_SECONDS,
+        defaults=DEFAULT_USAGE,
+        version=SERVICE_VERSION,
+        log=write_log,
     )
-    messages: queue.Queue[dict[str, object]] = queue.Queue()
-
-    def reader() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
-            try:
-                item = json.loads(line)
-                if isinstance(item, dict):
-                    messages.put(item)
-            except json.JSONDecodeError:
-                continue
-
-    reader_thread = threading.Thread(target=reader, name="codex-account-reader", daemon=True)
-    reader_thread.start()
-    deadline = time.monotonic() + ACCOUNT_QUERY_TIMEOUT_SECONDS
-
-    def request(request_id: int, method: str, params: object) -> dict[str, object]:
-        assert process.stdin is not None
-        process.stdin.write(json.dumps({"id": request_id, "method": method, "params": params}) + "\n")
-        process.stdin.flush()
-        while time.monotonic() < deadline:
-            try:
-                item = messages.get(timeout=min(0.25, max(0.01, deadline - time.monotonic())))
-            except queue.Empty:
-                continue
-            if item.get("id") == request_id:
-                result = item.get("result")
-                if isinstance(result, dict):
-                    return result
-                raise RuntimeError(str(item.get("error") or "Codex account query failed"))
-        raise TimeoutError("Codex account query timed out")
-
-    account_usage: dict[str, object] = {}
-    try:
-        request(1, "initialize", {"clientInfo": {"name": "Codex-TrafficLight", "version": "1.0"}})
-        limits = request(2, "account/rateLimits/read", None)
-        try:
-            account_usage = request(3, "account/usage/read", None)
-        except (RuntimeError, TimeoutError) as exc:
-            write_log(f"Codex credits query skipped: {exc}")
-    finally:
-        if process.stdin is not None:
-            try:
-                process.stdin.close()
-            except OSError:
-                pass
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2)
-        reader_thread.join(timeout=1)
-        if process.stdout is not None:
-            process.stdout.close()
-    snapshots = limits.get("rateLimitsByLimitId")
-    snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else None
-    if not isinstance(snapshot, dict):
-        snapshot = limits.get("rateLimits")
-    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("primary"), dict):
-        raise RuntimeError("Codex returned no primary rate limit")
-    credits_label = extract_credits_label(account_usage)
-    return {
-        **DEFAULT_USAGE,
-        **parse_usage_window(snapshot.get("primary"), "primary"),
-        **parse_usage_window(snapshot.get("secondary"), "secondary"),
-        "available": remaining_value(snapshot["primary"].get("usedPercent")) is not None,
-        "plan_type": str(snapshot.get("planType") or ""),
-        "credits_available": bool(credits_label),
-        "credits_label": credits_label,
-        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "source": "app_server",
-    }
 
 
 def refresh_usage_cache_once() -> dict[str, object]:
@@ -949,7 +710,10 @@ def refresh_usage_cache_once() -> dict[str, object]:
         write_log(f"Codex live account usage query failed: {exc}")
         with health_lock:
             usage_query_health.update({"last_error": f"{type(exc).__name__}: {exc}", "last_error_at": time.time()})
-        return latest_session_usage_fallback() or read_usage_cache()
+        try:
+            return latest_session_usage_fallback() or read_usage_cache()
+        except OSError:
+            return read_usage_cache()
     with health_lock:
         usage_query_health.update({"last_success_at": time.time(), "last_error": "", "last_error_at": 0.0})
     return usage
@@ -1014,7 +778,12 @@ def update_task_usage_snapshot(usage: dict[str, object] | None) -> None:
         status_data["task_usage_label"] = format_task_usage_label(deltas["primary"], deltas["secondary"])
         status_data["task_usage_primary_label"] = format_usage_delta(deltas["primary"])
         status_data["task_usage_secondary_label"] = format_usage_delta(deltas["secondary"])
-        atomic_write_json(STATUS_FILE, status_data)
+        try:
+            atomic_write_json(STATUS_FILE, status_data)
+        except OSError:
+            state_store.write_failed(STATUS_FILE, "任务额度摘要保存失败，已保留最后可用快照")
+            raise
+        state_store.accept(STATUS_FILE, status_data)
 
 
 def refresh_usage_and_task_snapshot() -> None:
@@ -1028,211 +797,19 @@ usage_refresh_worker = SingleFlightWorker(refresh_usage_and_task_snapshot, name=
 
 
 def codex_status_monitor() -> None:
-    write_log(f"Codex auto monitor watching: {CODEX_SESSIONS_DIR}")
-    follower = JsonlFollower()
-    ignored_paths: set[Path] = set()
-    last_success_at = 0.0
-    refresh_tracker = TaskRefreshTracker()
-    initialized = False
-    usage_scheduler = IntervalScheduler(USAGE_REFRESH_INTERVAL_SECONDS)
-    files: list[Path] = []
-    next_discovery_at = 0.0
-
-    while True:
-        update_monitor_health(heartbeat_at=time.time())
-        try:
-            monotonic_now = time.monotonic()
-            if usage_scheduler.due(now=monotonic_now):
-                usage_refresh_worker.request()
-            if monotonic_now >= next_discovery_at:
-                recent = iter_recent_session_files()
-                retained_active = [path for path in TELEMETRY.active_paths() if path.exists()]
-                files = list(dict.fromkeys([*recent, *retained_active]))
-                next_discovery_at = monotonic_now + SESSION_DISCOVERY_INTERVAL_SECONDS
-                update_monitor_health(last_scan_at=time.time(), tracked_files=len(files))
-            if not files:
-                update_monitor_health(initialized=True, tracked_files=0)
-                if not initialized:
-                    usage_refresh_worker.request()
-                initialized = True
-                time.sleep(min(1.0, SESSION_DISCOVERY_INTERVAL_SECONDS))
-                continue
-
-            if not initialized:
-                TELEMETRY.rebuild(files)
-                for path in files:
-                    try:
-                        follower.start_at_end(path)
-                    except FileNotFoundError:
-                        continue
-                    task = TELEMETRY.task_for(path)
-                    if task.status in {"running", "waiting"}:
-                        refresh_tracker.mark_active((str(path), task.turn_id or task.session_id))
-                snapshot = TELEMETRY.snapshot()
-                if snapshot["status"] in {"running", "waiting"}:
-                    write_status(str(snapshot["status"]), str(snapshot["stage"]))
-                    update_task_usage_snapshot(read_usage_cache())
-                else:
-                    write_status("idle", "Codex 空闲")
-                usage_refresh_worker.request()
-                initialized = True
-                update_monitor_health(initialized=True)
-                time.sleep(MONITOR_INTERVAL_SECONDS)
-                continue
-
-            for path in files:
-                if path in ignored_paths:
-                    continue
-
-                for line in follower.read_lines(path):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if is_approval_review_event(event):
-                        ignored_paths.add(path)
-                        TELEMETRY.mark_ignored(path)
-                        write_log(f"Ignored approval review session: {path}")
-                        break
-                    fallback_usage = consider_session_usage_fallback(event, path)
-                    if fallback_usage:
-                        update_task_usage_snapshot(fallback_usage)
-                    applied_status = TELEMETRY.ingest(event, path)
-                    task = TELEMETRY.task_for(path)
-                    task_key = (str(path), task.turn_id or task.session_id)
-                    if applied_status in {"running", "waiting"}:
-                        refresh_tracker.mark_active(task_key)
-                        update_task_usage_snapshot(read_usage_cache())
-                    elif applied_status in {"success", "error"}:
-                        if refresh_tracker.complete(task_key, success=applied_status == "success"):
-                            usage_refresh_worker.request()
-                        if applied_status == "success":
-                            last_success_at = time.time()
-
-                    if applied_status:
-                        NOTIFIER.notify(applied_status, task.turn_id or task.session_id, task.project)
-                        snapshot = TELEMETRY.snapshot()
-                        snapshot_status = str(snapshot["status"])
-                        if snapshot_status in {"running", "waiting", "error"}:
-                            write_status(snapshot_status, str(snapshot["stage"]))
-                        elif snapshot_status == "success":
-                            write_status("success", "Codex 任务完成")
-
-            current = read_status()
-            now = time.time()
-            watched_paths = set(files)
-            follower.prune(watched_paths)
-            ignored_paths.intersection_update(watched_paths)
-            refresh_tracker.prune(watched_paths)
-            TELEMETRY.prune(watched_paths)
-            update_monitor_health(tracked_files=follower.tracked_count)
-            if current.get("status") == "success" and last_success_at and now - last_success_at > SUCCESS_HOLD_SECONDS:
-                TELEMETRY.expire_completed(SUCCESS_HOLD_SECONDS)
-                write_status("idle", "Codex 空闲")
-                last_success_at = 0.0
-            elif current.get("status") == "error" and TELEMETRY.expire_errors(ERROR_HOLD_SECONDS):
-                write_status("idle", "Codex 空闲")
-            elif TELEMETRY.expire_stale(RUNNING_STALE_SECONDS):
-                snapshot = TELEMETRY.snapshot()
-                write_status(str(snapshot["status"]), str(snapshot["stage"]))
-
-        except Exception as exc:
-            write_log(f"Codex auto monitor error: {exc}")
-            update_monitor_health(last_error=f"{type(exc).__name__}: {exc}", last_error_at=time.time())
-
-        time.sleep(MONITOR_INTERVAL_SECONDS)
-
-
-class StatusHandler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def send_body(self, status: int, body: bytes, content_type: str) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-store")
-        if ALLOW_CORS:
-            self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def authorized(self, query: dict[str, list[str]]) -> bool:
-        return request_authorized(self.client_address[0], query, self.headers.get("Authorization", ""))
-
-    def do_GET(self) -> None:
-        parsed = urlsplit(self.path)
-        path = parsed.path.rstrip("/") or "/"
-        query = parse_qs(parsed.query)
-        if not self.authorized(query):
-            self.send_body(403, b"Forbidden", "text/plain; charset=utf-8")
-            write_log(f"Request denied from {self.client_address[0]}: GET {path}")
-            return
-
-        if path == "/rainmeter":
-            status_data = read_status()
-            usage_data = read_usage_cache()
-            task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
-            health = service_health_snapshot(usage_data, task_data)
-            task_data["health_label"] = health["label"]
-            status_data = effective_status(status_data, task_data)
-            text = build_rainmeter_payload(status_data, usage_data, task_data)
-            body = text.encode("utf-8")
-            self.send_body(200, body, "text/plain; charset=utf-8")
-            return
-
-        if path == "/tasks":
-            task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
-            body = build_tasks_payload(task_data).encode("utf-8")
-            self.send_body(200, body, "text/plain; charset=utf-8")
-            return
-
-        if path == "/usage":
-            body = json.dumps(public_usage(read_usage_cache()), ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_body(200, body, "application/json; charset=utf-8")
-            return
-
-        if path == "/health":
-            task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
-            health = service_health_snapshot(task_data=task_data)
-            body = json.dumps(
-                {
-                    **health,
-                    "task": task_data,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ).encode("utf-8")
-            self.send_body(200, body, "application/json; charset=utf-8")
-            return
-
-        if path != "/status":
-            self.send_error(404, "Not Found")
-            write_log(f"Unknown request from {self.client_address[0]}: GET {path}")
-            return
-
-        status_data = read_status()
-        usage_data = read_usage_cache()
-        task_data = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
-        status_data = effective_status(status_data, task_data)
-        status_data["usage"] = public_usage(usage_data)
-        status_data["task"] = task_data
-        status_data["health"] = service_health_snapshot(usage_data, task_data)
-        body = json.dumps(status_data, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_body(200, body, "application/json; charset=utf-8")
-
-    def log_message(self, fmt: str, *args: object) -> None:
-        return
+    return service_monitor.run_monitor(sys.modules[__name__])
 
 
 class StatusServer(ThreadingHTTPServer):
     daemon_threads = True
     # Do not allow a second listener to share the status port. Platform launchers also
     # checks /health, while this socket setting closes the startup race.
-    allow_reuse_address = False
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def write_pid_file() -> None:
@@ -1252,8 +829,74 @@ def remove_pid_file() -> None:
         data = json.loads(PID_FILE.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return
-    if data.get("pid") == os.getpid():
+    if isinstance(data, dict) and data.get("pid") == os.getpid():
         PID_FILE.unlink(missing_ok=True)
+
+
+def dashboard_snapshot() -> dict[str, object]:
+    usage = public_usage(read_usage_cache())
+    task = TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+    status = effective_status(read_status(), task)
+    health = service_health_snapshot(usage, task)
+    return {
+        "status": status,
+        "usage": usage,
+        "task": task,
+        "health": health,
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "usage_refresh": usage_refresh_worker.snapshot(),
+    }
+
+
+def api_dispatch(method: str, path: str, query: dict[str, list[str]], data: dict[str, object]) -> tuple[int, object]:
+    def parameter(name: str, default: str = "") -> str:
+        return query.get(name, [default])[0]
+
+    if method == "GET":
+        if path == "/api/snapshot":
+            return 200, dashboard_snapshot()
+        if path == "/api/tasks":
+            return 200, TELEMETRY.public_snapshot(expose_details=EXPOSE_TASK_DETAILS)
+        if path == "/api/history":
+            if not EXPOSE_TASK_DETAILS:
+                return 200, {"items": [], "total": 0, "limit": 50, "offset": 0}
+            return 200, TELEMETRY.history_query(
+                project=parameter("project"),
+                status=parameter("status"),
+                since=parameter("since"),
+                until=parameter("until"),
+                limit=int(parameter("limit", "50")),
+                offset=int(parameter("offset", "0")),
+            )
+        if path == "/api/peers":
+            snapshot = PEER_SERVICES.public_snapshot()
+            if not EXPOSE_TASK_DETAILS:
+                for item in snapshot.get("items", []):
+                    item["snapshot"] = None
+            return 200, snapshot
+    if method == "POST":
+        if path == "/api/usage/refresh":
+            started = usage_refresh_worker.request()
+            return 202, {"ok": True, "started": started, "worker": usage_refresh_worker.snapshot()}
+        if path == "/api/tasks/control":
+            action = str(data.get("action") or "")
+            result = TELEMETRY.control_task(
+                action, session_id=str(data.get("session_id") or ""), turn_id=str(data.get("turn_id") or "")
+            )
+            if not result.get("ok"):
+                return 400, result
+            snapshot = TELEMETRY.snapshot()
+            write_status(str(snapshot["status"]), str(snapshot["stage"]))
+            return 200, result
+        if path == "/api/peers":
+            return 200, PEER_SERVICES.control(
+                str(data.get("action") or ""),
+                name=str(data.get("name") or ""),
+                url=str(data.get("url") or ""),
+                token=str(data.get("token") or ""),
+                peer_id=str(data.get("peer_id") or data.get("id") or ""),
+            )
+    return 404, {"error": "接口不存在"}
 
 
 def main() -> int:
@@ -1280,6 +923,7 @@ def main() -> int:
     print(f"Status file: {STATUS_FILE}")
     print(f"Log file: {LOG_FILE}")
     print(f"Codex usage sessions: {CODEX_SESSIONS_DIR}")
+    PEER_SERVICES.start()
     if AUTO_MONITOR:
         threading.Thread(target=codex_status_monitor, name="codex-status-monitor", daemon=True).start()
         print(f"Auto monitor: {CODEX_SESSIONS_DIR}")
@@ -1292,9 +936,13 @@ def main() -> int:
     finally:
         write_log("Codex status server stopped")
         server.server_close()
+        PEER_SERVICES.stop()
         remove_pid_file()
 
     return 0
+
+
+StatusHandler.app = sys.modules[__name__]
 
 
 if __name__ == "__main__":

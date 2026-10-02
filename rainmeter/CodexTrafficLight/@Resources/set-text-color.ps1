@@ -10,6 +10,7 @@
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VariablesFile = Join-Path $ScriptDir "variables.inc"
+. (Join-Path $ScriptDir "skin-settings.ps1")
 
 $labels = @{
   TextColor = "主要文字"
@@ -158,3 +159,4 @@ if ($Mode -eq "pick") {
 
 $content = Write-Variable $content $Variable $rgba
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
+Refresh-CodexSkins

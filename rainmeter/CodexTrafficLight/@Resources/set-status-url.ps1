@@ -5,6 +5,7 @@
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VariablesFile = Join-Path $ScriptDir "variables.inc"
+. (Join-Path $ScriptDir "skin-settings.ps1")
 
 if ([string]::IsNullOrWhiteSpace($Url)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
@@ -45,24 +46,16 @@ if ($tasksPath.EndsWith("/rainmeter", [StringComparison]::OrdinalIgnoreCase)) {
 $TasksUrl = $tasksBuilder.Uri.AbsoluteUri
 
 $content = Get-Content -LiteralPath $VariablesFile -Raw -Encoding Unicode
-if ($content -match '(?m)^StatusUrl=.*$') {
-  $content = [regex]::Replace($content, '(?m)^StatusUrl=.*$', { param($match) "StatusUrl=$Url" })
-} else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1StatusUrl=$Url`r`n"
-}
+$content = Set-SkinVariable $content 'StatusUrl' $Url
+$content = Set-SkinVariable $content 'JsonStatusUrl' $JsonUrl
+$content = Set-SkinVariable $content 'TasksUrl' $TasksUrl
 
-if ($content -match '(?m)^JsonStatusUrl=.*$') {
-  $content = [regex]::Replace($content, '(?m)^JsonStatusUrl=.*$', { param($match) "JsonStatusUrl=$JsonUrl" })
-} else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1JsonStatusUrl=$JsonUrl`r`n"
-}
-
-if ($content -match '(?m)^TasksUrl=.*$') {
-  $content = [regex]::Replace($content, '(?m)^TasksUrl=.*$', { param($match) "TasksUrl=$TasksUrl" })
-} else {
-  $content = $content -replace '(\[Variables\]\s*)', "`$1TasksUrl=$TasksUrl`r`n"
-}
-
+$dashboardBuilder = [UriBuilder]$uri
+$dashboardBuilder.Path = $normalizedPath -replace '/rainmeter$', '/'
+$dashboardBuilder.Query = ''
+$dashboardBuilder.Fragment = ''
+$content = Set-SkinVariable $content 'DashboardUrl' $dashboardBuilder.Uri.AbsoluteUri
+$dashboardBuilder.Fragment = 'history'
+$content = Set-SkinVariable $content 'HistoryUrl' $dashboardBuilder.Uri.AbsoluteUri
 Set-Content -LiteralPath $VariablesFile -Value $content -Encoding Unicode
-
-
+Refresh-CodexSkins

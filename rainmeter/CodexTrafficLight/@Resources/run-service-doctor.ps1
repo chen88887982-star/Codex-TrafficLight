@@ -1,21 +1,19 @@
-﻿param([string]$ServiceRoot)
-
-$ErrorActionPreference = "Stop"
+﻿param([string]$ServiceRoot, [switch]$Repair, [string]$StatusUrl = '', [string]$VariablesPath = '')
+$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
-
-if ([string]::IsNullOrWhiteSpace($ServiceRoot) -or -not (Test-Path -LiteralPath $ServiceRoot -PathType Container)) {
-  [System.Windows.Forms.MessageBox]::Show(
-    "未找到状态服务项目目录。请重新运行 install-rainmeter-skin.cmd 后再试。",
-    "CodexTrafficLight 服务体检",
-    [System.Windows.Forms.MessageBoxButtons]::OK,
-    [System.Windows.Forms.MessageBoxIcon]::Warning
-  ) | Out-Null
+try {
+  if ($StatusUrl) {
+    $uri = [Uri]$StatusUrl
+    if (-not $uri.IsLoopback) { throw '当前显示远程电脑。此按钮只维护本机服务；请到服务所在电脑执行体检/修复，或打开状态看板查看远程健康。' }
+  }
+  if ([string]::IsNullOrWhiteSpace($ServiceRoot) -or -not (Test-Path -LiteralPath $ServiceRoot -PathType Container)) {
+    throw '未找到本机项目目录。请重新安装皮肤，或在服务所在电脑运行维护脚本。'
+  }
+  $doctor = Join-Path ([IO.Path]::GetFullPath($ServiceRoot)) 'win\codex_status_server\.internal\service-doctor.ps1'
+  $port = if ($StatusUrl) { ([Uri]$StatusUrl).Port } else { 0 }
+  & $doctor -Repair:$Repair -Port $port -VariablesPath $VariablesPath
+  exit $LASTEXITCODE
+} catch {
+  [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'CodexTrafficLight 服务维护', 'OK', 'Warning') | Out-Null
   exit 1
 }
-
-$doctor = Join-Path ([IO.Path]::GetFullPath($ServiceRoot)) "win\codex_status_server\.internal\service-doctor.ps1"
-if (-not (Test-Path -LiteralPath $doctor -PathType Leaf)) {
-  throw "未找到服务体检脚本：$doctor"
-}
-& $doctor -Repair
-exit $LASTEXITCODE

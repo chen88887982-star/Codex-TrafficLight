@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -81,7 +82,7 @@ def atomic_write_json(path: Path, payload: dict[str, object]) -> None:
             delete=False,
         ) as handle:
             temporary_path = Path(handle.name)
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            json.dump(payload, handle, ensure_ascii=False, indent=2, allow_nan=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -95,34 +96,40 @@ def atomic_write_json(path: Path, payload: dict[str, object]) -> None:
 class JsonlFollower:
     """Read only complete appended JSONL records and survive file replacement/truncation."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_read_bytes: int = 256 * 1024, max_line_bytes: int = 8 * 1024 * 1024) -> None:
+        self.max_read_bytes = max(1024, max_read_bytes)
+        self.max_line_bytes = max(1024, max_line_bytes)
         self._positions: dict[Path, int] = {}
         self._identities: dict[Path, tuple[int, int]] = {}
         self._pending: dict[Path, bytes] = {}
+        self._pending_sizes: dict[Path, int] = {}
 
     def start_at_end(self, path: Path) -> None:
         stat = path.stat()
-        self._positions[path] = stat.st_size
+        self.start_at_offset(path, stat.st_size)
+
+    def start_at_offset(self, path: Path, offset: int) -> None:
+        stat = path.stat()
+        self._positions[path] = max(0, min(int(offset), stat.st_size))
         self._identities[path] = (stat.st_dev, stat.st_ino)
         self._pending.pop(path, None)
+        self._pending_sizes.pop(path, None)
 
-    def read_lines(self, path: Path) -> list[str]:
-        try:
-            stat = path.stat()
-        except FileNotFoundError:
-            self.forget(path)
-            return []
-
-        identity = (stat.st_dev, stat.st_ino)
-        position = self._positions.get(path, 0)
-        if self._identities.get(path) not in (None, identity) or stat.st_size < position:
-            position = 0
-            self._pending.pop(path, None)
-
+    def read_lines(self, path: Path, *, stop_at: int | None = None) -> list[str]:
         try:
             with path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                position = self._positions.get(path, 0)
+                if self._identities.get(path) not in (None, identity) or stat.st_size < position:
+                    position = 0
+                    self._pending.pop(path, None)
+                    self._pending_sizes.pop(path, None)
                 handle.seek(position)
-                chunk = handle.read()
+                maximum = self.max_read_bytes
+                if stop_at is not None:
+                    maximum = min(maximum, max(0, stop_at - position))
+                chunk = handle.read(maximum)
                 self._positions[path] = handle.tell()
         except FileNotFoundError:
             self.forget(path)
@@ -132,11 +139,60 @@ class JsonlFollower:
         if not chunk:
             return []
 
-        combined = self._pending.pop(path, b"") + chunk
-        records = combined.splitlines(keepends=True)
-        if records and not records[-1].endswith((b"\n", b"\r")):
-            self._pending[path] = records.pop()
-        return [record.rstrip(b"\r\n").decode("utf-8", errors="replace") for record in records]
+        pending = self._pending.pop(path, b"")
+        pending_size = self._pending_sizes.pop(path, 0)
+        result = []
+        for fragment in chunk.splitlines(keepends=True):
+            pending_size += len(fragment)
+            pending += fragment[: max(0, self.max_line_bytes - len(pending))]
+            if fragment.endswith((b"\n", b"\r")):
+                if pending_size <= self.max_line_bytes:
+                    result.append(pending.rstrip(b"\r\n").decode("utf-8", errors="replace"))
+                else:
+                    summary = self._oversized_record(pending)
+                    if summary:
+                        result.append(summary)
+                pending = b""
+                pending_size = 0
+        if pending_size:
+            self._pending[path] = pending
+            self._pending_sizes[path] = pending_size
+        return result
+
+    @staticmethod
+    def _oversized_record(prefix: bytes) -> str:
+        """Keep lifecycle fields from a large tool record without retaining its output."""
+        text = prefix[: 64 * 1024].decode("utf-8", errors="replace")
+        payload_start = re.search(r'"payload"\s*:\s*\{', text)
+        if not payload_start:
+            return ""
+        head, payload = text[: payload_start.start()], text[payload_start.end() :]
+
+        def string_field(source: str, field: str) -> str:
+            match = re.search(r'"' + re.escape(field) + r'"\s*:\s*("(?:[^"\\]|\\.)*")', source)
+            if not match:
+                return ""
+            try:
+                return str(json.loads(match.group(1)))
+            except json.JSONDecodeError:
+                return ""
+
+        event_type = string_field(head, "type")
+        payload_type = string_field(payload, "type")
+        if event_type not in {"event_msg", "response_item"} or not payload_type:
+            return ""
+        return json.dumps(
+            {
+                "type": event_type,
+                "timestamp": string_field(head, "timestamp"),
+                "payload": {key: string_field(payload, key) for key in ("type", "name", "role", "phase", "turn_id")},
+                "_large_record_summary": True,
+            }
+        )
+
+    def position_for(self, path: Path, *, complete_only: bool = False) -> int:
+        position = self._positions.get(path, 0)
+        return position - self._pending_sizes.get(path, 0) if complete_only else position
 
     def prune(self, active_paths: set[Path]) -> None:
         for path in set(self._positions) - active_paths:
@@ -146,6 +202,7 @@ class JsonlFollower:
         self._positions.pop(path, None)
         self._identities.pop(path, None)
         self._pending.pop(path, None)
+        self._pending_sizes.pop(path, None)
 
     @property
     def tracked_count(self) -> int:
@@ -199,10 +256,13 @@ class SingleFlightWorker:
                         continue
                     self._running = False
                     return
-        finally:
+        except BaseException:
+            # Normal completion already clears _running under the same lock as
+            # request(). A second unconditional clear could erase a new request.
             with self._lock:
                 self._pending = False
                 self._running = False
+            raise
 
     @property
     def running(self) -> bool:
@@ -249,7 +309,8 @@ class TaskRefreshTracker:
         self._pending.add(task_key)
 
     def complete(self, task_key: tuple[str, str], *, success: bool) -> bool:
-        needs_refresh = success and task_key in self._pending and task_key not in self._refreshed
+        # Both success and interruption can consume account usage.
+        needs_refresh = task_key in self._pending and task_key not in self._refreshed
         self._pending.discard(task_key)
         if needs_refresh:
             self._refreshed.add(task_key)

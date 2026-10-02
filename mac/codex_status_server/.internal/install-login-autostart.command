@@ -6,8 +6,10 @@ LABEL="com.codex.trafficlight.status"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${PLIST_DIR}/${LABEL}.plist"
 START_SCRIPT="${SERVICE_DIR}/启动状态服务.command"
-mkdir -p "$PLIST_DIR"
-python3 - "$PLIST_PATH" "$START_SCRIPT" "$SCRIPT_DIR" <<'PY'
+mkdir -p "$PLIST_DIR" "${SERVICE_DIR}/.runtime"
+PYTHON_BIN="${SERVICE_DIR}/../../.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN="$(command -v python3)"; fi
+"$PYTHON_BIN" - "$PLIST_PATH" "$START_SCRIPT" "$SCRIPT_DIR" <<'PY'
 import plistlib
 import sys
 from pathlib import Path
