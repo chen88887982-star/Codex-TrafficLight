@@ -336,6 +336,35 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("MeterIdleLight", script)
         self.assertIn("ConnectionOnline", sections["MeasureIdleChase"])
 
+    def test_connection_labels_do_not_cross_the_windows_ansi_boundary(self) -> None:
+        script_path = ROOT / "rainmeter" / "CodexTrafficLight" / "@Resources" / "connection-state.lua"
+        script = script_path.read_text(encoding="ascii")
+        text = MAIN_SKIN.read_text(encoding="utf-16")
+        sections = dict(re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text))
+        variables = dict(re.findall(r"(?m)^([^=\n]+)=(.*)$", sections["Variables"]))
+        labels = set(re.findall(r"#((?:Status|Connection)\w+Text)#", script))
+        self.assertGreaterEqual(len(labels), 11)
+        for name in labels:
+            with self.subTest(label=name):
+                reference = f"#{name}#"
+                for codepage in ("cp936", "cp1252"):
+                    received = reference.encode("ascii").decode(codepage)
+                    self.assertEqual(received.replace(reference, variables[name]), variables[name])
+                self.assertFalse(variables[name].isascii())
+        health = sections["MeasureHealthState"]
+        self.assertIn("StringIndex=22", health)
+        self.assertIn("RegExpSubstitute=1", health)
+        substitutes = re.findall(r'"([^"]+)":"([^"]+)"', health)
+        for label, expected in (("服务正常 · 0.5.0", "1"), ("服务异常", "0"), ("服务状态未知", "0"), ("", "0")):
+            with self.subTest(health=label):
+                result = label
+                for pattern, replacement in substitutes:
+                    result = re.sub(pattern, replacement, result)
+                self.assertEqual(result, expected)
+                self.assertTrue(result.isascii())
+        actions = sections["MeasureStatusParent"]
+        self.assertLess(actions.index("[!UpdateMeasure MeasureHealthState]"), actions.index('"Success()"'))
+
     def test_scaled_layout_keeps_click_regions_with_visual_content(self) -> None:
         text = MAIN_SKIN.read_text(encoding="utf-16")
         sections = dict(re.findall(r"(?ms)^\[([^]]+)\]\r?\n(.*?)(?=^\[|\Z)", text))
