@@ -229,6 +229,12 @@ class HttpUpgradeTests(unittest.TestCase):
         self.assertIn("usage_refresh", snapshot)
         self.assertEqual(len(self.request("/rainmeter")[1].decode().split("|")), 28)
 
+    def test_listener_starts_without_reverse_dns(self) -> None:
+        with patch("socket.getfqdn", side_effect=AssertionError("DNS must not block startup")):
+            with service.StatusServer(("127.0.0.1", 0), service.StatusHandler) as listener:
+                self.assertEqual(listener.server_name, "127.0.0.1")
+                self.assertEqual(listener.server_port, listener.server_address[1])
+
     def test_lan_data_routes_require_a_configured_token_while_static_dashboard_loads(self) -> None:
         original_setup = service.StatusHandler.setup
 

@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = Path(
@@ -809,7 +810,10 @@ class StatusServer(ThreadingHTTPServer):
     def server_bind(self) -> None:
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # HTTPServer.server_bind performs a reverse DNS lookup via getfqdn().
+        # The status service only needs its bound address; DNS must not delay startup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def write_pid_file() -> None:
