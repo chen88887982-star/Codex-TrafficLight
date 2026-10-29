@@ -2,6 +2,14 @@
 
 这个项目是一套通用 Rainmeter 交通灯方案。Rainmeter 固定运行在 Windows 上，Codex 可以运行在同一台 Windows、另一台 Windows，或者一台 Mac。
 
+第一次使用请看 [普通用户快速开始](docs/快速开始.md)：按“同机 Windows / Mac + Windows / 两台 Windows”选择路线。社交媒体分享使用 [项目主页](https://github.com/chen88887982-star/Codex-TrafficLight)，观众可从 **Code → Download ZIP** 完整下载。
+
+## 0.5.1 公开版完善
+
+- 同机访问保持直接连接；跨电脑的数据读取与偏好操作均需配置访问令牌。可在服务电脑的项目根目录运行 `python common/configure_access.py`（Mac 用 `python3`），生成私有配置，保留已有有效令牌与其他设置，重启服务后生效。
+- 修复 GitHub Actions 的临时目录上下文位置和中文 Windows 测试文件的 UTF-8 读取。
+- 项目采用 [MIT 许可证](LICENSE)。升级后重新安装皮肤并重启状态服务；已有配置、缓存和任务历史继续保留。
+
 ## 0.5 状态看板、任务管理与历史
 
 启动状态服务后，直接用浏览器访问 `http://127.0.0.1:8767/`。同一局域网中的电脑或手机可访问 `http://服务电脑IP:8767/`。Rainmeter 标题点击打开看板，右键菜单可以打开任务历史；原有 `/rainmeter` 28 字段协议仍为版本 2。
@@ -10,9 +18,9 @@
 - **任务管理**：选择关注、固定显示、取消固定、重新核验日志和忽略当前轮。忽略只隐藏本工具监控，真实 Codex 任务继续运行；下一轮自动恢复。选择/固定在当前服务进程有效。重新核验会保留原忽略选择，可用选择关注恢复显示。
 - **额度刷新**：看板可手动刷新并显示查询进度、失败原因和最后更新时间。默认空闲每 15 分钟、忙碌每 2 分钟刷新；成功、异常或中止结束后各仅额外查询一次。`USAGE_REFRESH_INTERVAL_SECONDS=0` 可关闭定时刷新，`USAGE_BUSY_REFRESH_SECONDS=0` 可关闭忙碌加速。百分比差值表示期间账户变化，不能归因到单个任务。
 - **任务历史**：按项目、状态、日期查询与分页，记录任务摘要、每轮 token、耗时及 Git 汇总。SQLite 位于服务 `.runtime/task-history.sqlite3`，默认保留最近 90 天、最多 10000 条已结束任务；活动任务不因保留期限被删除。不会保存提示词全文、原始工具输出或绝对工作目录。历史存储故障不会阻断任务监控。
-- **多电脑聚合**：设备页添加其他已升级到 0.5 的状态服务根地址，可选填写对端令牌。最多 8 台设备，后台并发读取，失败保留快照并明确标为离线；每台设备的任务、账户额度独立展示。远程源只读，在设备卡片打开对端看板后管理其任务偏好。
+- **多电脑聚合**：设备页添加其他已升级到 0.5.1 的状态服务根地址，并填写对端令牌。最多 8 台设备，后台并发读取，失败保留快照并明确标为离线；每台设备的任务、账户额度独立展示。远程源只读，在设备卡片打开对端看板后管理其任务偏好。
 
-本机看板可直接操作本工具偏好。局域网操作需在服务机配置 `STATUS_ACCESS_TOKEN` 或私有 `status-auth.json`；在看板输入访问令牌后仅保存在该浏览器标签页的 sessionStorage，使用 Authorization 请求头发送。静态页面可先打开，接口仍执行访问检查；所有偏好操作均为同源 POST，不提供执行命令、结束 Codex 任务或自动 Git 推送能力。设备令牌仅保存在私有 `.runtime/peer-services.json`，不会出现在公开接口。
+本机看板可直接操作本工具偏好。局域网读取和操作均需在服务机配置 `STATUS_ACCESS_TOKEN` 或私有 `status-auth.json`；在看板输入访问令牌后仅保存在该浏览器标签页的 sessionStorage，使用 Authorization 请求头发送。静态页面可先打开，数据接口仍执行访问检查；所有偏好操作均为同源 POST，不提供执行命令、结束 Codex 任务或自动 Git 推送能力。设备令牌仅保存在私有 `.runtime/peer-services.json`，不会出现在公开接口。
 
 Rainmeter 断连显示最后成功读取时间，超过默认 10 秒离线阈值后灯光变灰。设置中的尺寸按整体比例缩放；脚本在用户提交配置后刷新皮肤。安装器自动识别当前 Rainmeter SkinPath，也支持：
 
@@ -50,15 +58,15 @@ Windows 和 macOS 启动参数保存在服务 `.runtime/launch-settings.json`，
 - 本轮 token、上下文占用、模型和推理强度；
 - 状态服务健康度、额度缓存新鲜度和可选 Credits 余额。
 
-状态服务现在按 `session_id + turn_id` 分别管理并行任务，识别当前 Codex 的工具调用、`task_complete` 和中止事件；服务在任务执行中重启时，也会回看最近会话恢复状态。JSON 接口提供完整活动任务列表，Rainmeter 用紧凑文本显示最多两个其他并行项目和剩余数量。项目、当前轮任务标题、Git、token 和模型详情默认直接提供给 Rainmeter，无需配置访问令牌。
+状态服务现在按 `session_id + turn_id` 分别管理并行任务，识别当前 Codex 的工具调用、`task_complete` 和中止事件；服务在任务执行中重启时，也会回看最近会话恢复状态。JSON 接口提供完整活动任务列表，Rainmeter 用紧凑文本显示最多两个其他并行项目和剩余数量。项目、当前轮任务标题、Git、token 和模型详情可提供给 Rainmeter；本机访问无需令牌，跨电脑访问需配置令牌。
 
 ## 组合方式
 
 | 装备组合 | 状态服务运行位置 | Rainmeter 配置 |
 |---|---|---|
 | Win + Win 同一台电脑 | 本机 Windows | `http://127.0.0.1:8767/rainmeter` |
-| Win + 另一台 Win | 运行 Codex 的 Windows | `http://对方Windows-IP:8767/rainmeter` |
-| Win + Mac | 运行 Codex 的 Mac | `http://Mac-IP:8767/rainmeter` |
+| Win + 另一台 Win | 运行 Codex 的 Windows | `http://对方Windows-IP:8767/rainmeter?token=你的令牌` |
+| Win + Mac | 运行 Codex 的 Mac | `http://Mac-IP:8767/rainmeter?token=你的令牌` |
 
 Rainmeter 只负责读取 `StatusUrl`。所以两套装备通用的关键就是：哪台电脑运行 Codex，就在哪台电脑启动状态服务。
 
@@ -91,13 +99,13 @@ StatusUrl=http://127.0.0.1:8767/rainmeter
 跨电脑时，在设置页把地址改成运行 Codex 那台电脑的局域网 IP：
 
 ```ini
-StatusUrl=http://对方IP:8767/rainmeter
+StatusUrl=http://对方IP:8767/rainmeter?token=你的令牌
 ```
 
 浏览器验证服务是否可访问时，用 `/status`：
 
 ```text
-http://对方IP:8767/status
+http://对方IP:8767/status?token=你的令牌
 ```
 
 查看 Windows 本机 IP：在运行 Codex 的 Windows 上打开命令提示符，输入 `ipconfig`，找当前联网网卡下的 `IPv4 地址`，通常是 `192.168.x.x`、`10.x.x.x` 或 `172.16-31.x.x`。
@@ -138,6 +146,8 @@ http://127.0.0.1:8767/status
 
 ### 方式 B：Codex 在一台 Windows，Rainmeter 在另一台 Windows
 
+跨电脑前，先在运行 Codex 的电脑按下方“任务详情与跨电脑访问令牌”配置令牌，并在客户端地址中携带同一令牌；没有配置令牌的局域网数据请求返回 403。
+
 1. 在运行 Codex 的 A 电脑上打开项目文件夹。
 
 2. 在 A 电脑上打开命令提示符，用同一个中文入口增加 `lan` 参数启动：
@@ -163,25 +173,25 @@ ipconfig
 4. 在 Rainmeter 那台 B 电脑的浏览器验证：
 
 ```text
-http://运行Codex电脑的IP:8767/status
+http://运行Codex电脑的IP:8767/status?token=你的令牌
 ```
 
 例如：
 
 ```text
-http://192.168.2.112:8767/status
+http://192.168.2.112:8767/status?token=你的令牌
 ```
 
 5. 在 B 电脑的 Rainmeter 设置页填：
 
 ```text
-http://运行Codex电脑的IP:8767/rainmeter
+http://运行Codex电脑的IP:8767/rainmeter?token=你的令牌
 ```
 
 例如：
 
 ```text
-http://192.168.2.112:8767/rainmeter
+http://192.168.2.112:8767/rainmeter?token=你的令牌
 ```
 
 ### Windows 端说明
@@ -231,7 +241,7 @@ http://127.0.0.1:8767/tasks
 如果是另一台 Windows 读取，就在另一台电脑浏览器打开：
 
 ```text
-http://运行Codex电脑的IP:8767/status
+http://运行Codex电脑的IP:8767/status?token=你的令牌
 ```
 
 Windows 状态服务会写日志：
@@ -257,6 +267,8 @@ win\codex_status_server\.runtime\status-server.log
 ### Mac 作为 Codex 状态服务电脑
 
 Rainmeter 仍然运行在 Windows 上；Mac 负责运行 Codex 和状态服务。
+
+跨电脑前，先在 Mac 项目根目录运行 `python3 common/configure_access.py`，保存显示的私有令牌。配置后再启动服务；已运行的服务需重启。Windows 皮肤的读取地址需携带同一令牌，浏览器看板在“访问设置”输入令牌。
 
 1. 确认项目已经在 Mac 上。
 
@@ -340,25 +352,25 @@ ipconfig getifaddr en1
 8. 在 Windows 浏览器验证：
 
 ```text
-http://Mac-IP:8767/status
+http://Mac-IP:8767/status?token=你的令牌
 ```
 
 例如：
 
 ```text
-http://192.168.2.50:8767/status
+http://192.168.2.50:8767/status?token=你的令牌
 ```
 
 9. 在 Windows Rainmeter 设置页填：
 
 ```text
-http://Mac-IP:8767/rainmeter
+http://Mac-IP:8767/rainmeter?token=你的令牌
 ```
 
 例如：
 
 ```text
-http://192.168.2.50:8767/rainmeter
+http://192.168.2.50:8767/rainmeter?token=你的令牌
 ```
 
 ### Mac 端手动切换状态
@@ -395,26 +407,33 @@ cd ~/Documents/Codex-TrafficLight/mac/codex_status_server
 
 Rainmeter 对中文配置文件的编码比较敏感。本项目的 Rainmeter 文件应使用 Unicode 编码保存。如果桌面显示乱码，重新安装最新项目文件，然后在 Rainmeter 里刷新皮肤。
 
-## 任务详情与可选访问令牌
+## 任务详情与跨电脑访问令牌
 
-默认情况下，`/status`、`/health` 和 `/rainmeter` 会直接输出项目名、任务标题、Git、token 和模型详情，Rainmeter 地址不需要附加密码：
+本机 `127.0.0.1` / `::1` 可直接读取；局域网的 `/status`、`/health`、`/usage`、`/tasks`、`/rainmeter` 与 `/api/*` 数据读取及操作都需要服务访问令牌。未配置或令牌不匹配时返回 403。静态看板页面可打开，再通过“访问设置”输入令牌连接。
 
-```text
-http://运行Codex电脑的IP:8767/rainmeter
+在运行 Codex 的服务电脑上，进入项目根目录，运行对应命令：
+
+```powershell
+# Windows
+python common/configure_access.py
 ```
 
-如果以后需要限制访问，可以选择启用令牌：
+```bash
+# Mac
+python3 common/configure_access.py
+```
 
-1. 复制根目录的 `status-auth.example.json` 为 `status-auth.json`。
-2. 把 `access_token` 换成只在你设备间使用的长随机字符串。
-3. `status-auth.json` 已加入 `.gitignore`，不要提交或发送给别人。
-4. 在 Rainmeter 设置页把地址写成带同一令牌的形式：
+命令自动生成长随机令牌并保存到私有 `status-auth.json`，显示供自己粘贴的令牌。重复运行保留原有有效令牌；通知、静音时间和自定义配置也会保留。原配置格式错误时停止并保留文件。`status-auth.json` 已加入 `.gitignore`，不提交，也不放进公开图片或社交媒体。配置后重启状态服务。
+
+在 Rainmeter 设置页把读取地址写成带同一令牌的形式：
 
 ```text
 http://运行Codex电脑的IP:8767/rainmeter?token=你的令牌
 ```
 
-也可以不用 JSON，改用环境变量启用令牌：
+跨电脑检查健康接口时同样使用 `http://运行Codex电脑的IP:8767/health?token=你的令牌`。浏览器看板打开 `http://运行Codex电脑的IP:8767/`，在“访问设置”输入令牌；多设备聚合在“设备”页的令牌字段填写，不放进服务根地址。
+
+也可以使用环境变量；已设置的环境变量优先于 JSON 配置，客户端使用相同令牌：
 
 ```text
 STATUS_ACCESS_TOKEN=你的令牌
@@ -426,7 +445,7 @@ STATUS_ACCESS_TOKEN=你的令牌
 EXPOSE_TASK_DETAILS=0
 ```
 
-配置 `STATUS_ACCESS_TOKEN` 后，局域网请求必须提供正确令牌；本机回环请求继续允许 Rainmeter 和健康检查直接访问。服务日志只记录请求路径，不会记录 URL 查询参数中的令牌。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
+本机回环请求继续允许 Rainmeter 和健康检查直接访问。服务日志不记录 URL 查询参数中的令牌；浏览器看板用 Authorization 请求头发送，且只保存在当前标签页。服务用于本机或可信局域网，不作为公网服务部署。CORS 默认关闭，需要时再显式设置 `ALLOW_CORS=1`。
 
 ## 可选任务通知
 
@@ -531,4 +550,4 @@ macOS 根目录只保留一个用户入口：`mac/codex_status_server/启动状�
 - 会话发现每次只扫描最近三天目录和最多 100 个索引文件；启动及每 5 分钟补扫全部历史目录。已发现的活动任务单独保留。较老且未被索引的会话恢复，最迟在下一次历史补扫时发现。
 - Mac 只读体检：运行 `bash mac/codex_status_server/.internal/health-check.command`；自定义端口可用 `PORT=端口号 bash ...`。检查端口、服务版本、协议、健康状态、PID 所属进程、登录启动配置，并报告日志位置。体检不自动结束进程；异常时使用本项目停止入口和启动入口处理。
 - CI 增加 macOS，与 Windows、Linux 一起运行 Python 3.10／3.13／3.14 测试。Mac 还会在临时项目副本和随机端口上验证实际启动、重复启动、体检及安全停止。
-- 0.4 版将协议 2 的 Rainmeter 文本接口由 26 字段扩为 28 字段（末尾增加两个窗口名称）；当前 0.5.0 保持这套协议。升级时重新安装皮肤并重启状态服务，避免混用新旧版本。
+- 0.4 版将协议 2 的 Rainmeter 文本接口由 26 字段扩为 28 字段（末尾增加两个窗口名称）；当前 0.5.1 保持这套协议。升级时重新安装皮肤并重启状态服务，避免混用新旧版本。

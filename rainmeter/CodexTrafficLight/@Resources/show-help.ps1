@@ -53,12 +53,13 @@ ipconfig getifaddr en0
 ipconfig getifaddr en1
 
 7. Windows Rainmeter 填写地址
-假设 Mac IP 是 192.168.2.50：
-http://192.168.2.50:8767/rainmeter
+先在服务电脑项目根目录运行 python3 common/configure_access.py 配置令牌并重启服务。
+假设 Mac IP 是 192.168.2.50，地址中的“你的令牌”需替换：
+http://192.168.2.50:8767/rainmeter?token=你的令牌
 
 8. Windows 浏览器验证
 Windows 浏览器先打开：
-http://192.168.2.50:8767/status
+http://192.168.2.50:8767/status?token=你的令牌
 
 能看到 JSON，Rainmeter 就能读取。
 
@@ -98,10 +99,10 @@ win\codex_status_server\启动状态服务.cmd lan
 找到正在联网网卡的 IPv4 地址，例如 192.168.2.112。
 
 4. 在 B 电脑浏览器验证：
-http://192.168.2.112:8767/status
+http://192.168.2.112:8767/status?token=你的令牌
 
 5. 在 B 电脑 Rainmeter 设置地址填：
-http://192.168.2.112:8767/rainmeter
+http://192.168.2.112:8767/rainmeter?token=你的令牌
 
 三、常见问题
 如果跨电脑打不开，检查：

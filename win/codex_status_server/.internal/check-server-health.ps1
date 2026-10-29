@@ -14,7 +14,7 @@ if ($health.service -ne "codex-traffic-light-status") {
   exit 1
 }
 $health | ConvertTo-Json -Depth 6
-if ($health.service_version -ne '0.5.0' -or [int]$health.protocol_version -ne 2) {
+if ($health.service_version -ne '0.5.1' -or [int]$health.protocol_version -ne 2) {
   Write-Error '服务版本或协议不匹配。请先只读体检，再按提示修复。'
   exit 1
 }

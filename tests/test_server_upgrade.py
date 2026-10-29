@@ -227,6 +227,32 @@ class HttpUpgradeTests(unittest.TestCase):
         self.assertIn("usage_refresh", snapshot)
         self.assertEqual(len(self.request("/rainmeter")[1].decode().split("|")), 28)
 
+    def test_lan_data_routes_require_a_configured_token_while_static_dashboard_loads(self) -> None:
+        original_setup = service.StatusHandler.setup
+
+        def remote_setup(handler: service.StatusHandler) -> None:
+            original_setup(handler)
+            handler.client_address = ("192.0.2.10", handler.client_address[1])
+
+        with patch.object(service.StatusHandler, "setup", remote_setup):
+            with patch.object(service, "STATUS_ACCESS_TOKEN", ""):
+                self.assertEqual(self.request("/")[0], 200)
+                for route in ("/status", "/health", "/usage", "/tasks", "/rainmeter", "/api/snapshot", "/api/history"):
+                    with self.subTest(route=route), patch.object(service, "dashboard_snapshot") as snapshot:
+                        code, body, _ = self.request(route)
+                        self.assertEqual(code, 403)
+                        self.assertIn("令牌", json.loads(body)["error"])
+                        snapshot.assert_not_called()
+            with patch.object(service, "STATUS_ACCESS_TOKEN", "private-test-token"):
+                self.assertEqual(self.request("/health")[0], 403)
+                self.assertEqual(self.request("/health?token=wrong")[0], 403)
+                code, body, _ = self.request("/rainmeter?token=private-test-token")
+                self.assertEqual(code, 200)
+                self.assertEqual(len(body.decode().split("|")), 28)
+                self.assertEqual(
+                    self.request("/api/snapshot", headers={"Authorization": "Bearer private-test-token"})[0], 200
+                )
+
     def test_manual_refresh_is_nonblocking_and_foreign_origin_is_rejected(self) -> None:
         with patch.object(service.usage_refresh_worker, "request", return_value=True) as refresh:
             code, _, _ = self.request(

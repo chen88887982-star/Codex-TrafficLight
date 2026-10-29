@@ -71,7 +71,7 @@ class AccuracyTests(unittest.TestCase):
             update_task_usage_snapshot(usage)
             write_status("running", "任务 B 并行")
             update_task_usage_snapshot({**usage, "primary_used_percent": 13})
-            result = json.loads(path.read_text())
+            result = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(result["task_usage_primary_label"], "-3%")
             self.assertIn("期间账户变化", result["task_usage_label"])
             for changes in (
@@ -79,11 +79,11 @@ class AccuracyTests(unittest.TestCase):
                 {"primary_used_percent": 80, "source": "session_event"},
             ):
                 update_task_usage_snapshot({**usage, **changes})
-                self.assertEqual(json.loads(path.read_text())["task_usage_primary_label"], "")
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["task_usage_primary_label"], "")
             write_status("success", "完成")
             write_status("running", "新任务")
             update_task_usage_snapshot({**usage, "primary_used_percent": 60})
-            self.assertEqual(json.loads(path.read_text())["task_usage_primary_label"], "")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["task_usage_primary_label"], "")
 
     def test_session_index_avoids_full_walk_until_interval_and_rediscovers_history(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

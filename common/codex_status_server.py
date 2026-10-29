@@ -361,13 +361,13 @@ def request_authorized(client_address: str, query: dict[str, list[str]], authori
         if ipaddress.ip_address(client_address).is_loopback:
             return True
     except ValueError:
-        pass
+        return False
     if not STATUS_ACCESS_TOKEN:
-        return True
+        return False
     supplied = query.get("token", [""])[0]
     if authorization.startswith("Bearer "):
         supplied = authorization[7:]
-    return hmac.compare_digest(supplied, STATUS_ACCESS_TOKEN)
+    return hmac.compare_digest(supplied.encode("utf-8"), STATUS_ACCESS_TOKEN.encode("utf-8"))
 
 
 def is_approval_review_event(event: dict[str, object]) -> bool:

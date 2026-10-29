@@ -11,7 +11,7 @@ $ExpectedPort = if ($Port -gt 0) { $Port } elseif (-not (Test-Path -LiteralPath 
 if ($ExpectedPort -gt 65535) { throw 'Port must be in 1..65535.' }
 $LegacyPort = 8765
 $ExpectedService = "codex-traffic-light-status"
-$ExpectedVersion = "0.5.0"
+$ExpectedVersion = "0.5.1"
 $ExpectedProtocol = 2
 $StartScript = Join-Path $ScriptDir "start-server-background.ps1"
 . (Join-Path $ProjectRoot 'rainmeter\CodexTrafficLight\@Resources\rainmeter-paths.ps1')

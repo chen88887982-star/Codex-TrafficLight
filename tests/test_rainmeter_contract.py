@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from codex_status_server import DEFAULT_STATUS_PORT, build_rainmeter_payload, build_tasks_payload
+from service_metadata import SERVICE_VERSION
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_SKIN = ROOT / "rainmeter" / "CodexTrafficLight" / "CodexTrafficLight.ini"
@@ -208,7 +209,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("修复本机服务", settings)
         self.assertIn("本机任务通知", settings)
         self.assertIn("[MeasureServiceVersionParent]", main)
-        self.assertIn("IfMatch=^0\\.5\\.0$", main)
+        self.assertIn(f"IfMatch=^{re.escape(SERVICE_VERSION)}$", main)
         self.assertIn("[MeterVersionWarning]", main)
         self.assertIn("[MeterTaskClickOverlay]", main)
 
@@ -355,7 +356,7 @@ class RainmeterContractTests(unittest.TestCase):
         self.assertIn("StringIndex=22", health)
         self.assertIn("RegExpSubstitute=1", health)
         substitutes = re.findall(r'"([^"]+)":"([^"]+)"', health)
-        for label, expected in (("服务正常 · 0.5.0", "1"), ("服务异常", "0"), ("服务状态未知", "0"), ("", "0")):
+        for label, expected in (("服务正常 · 0.5.1", "1"), ("服务异常", "0"), ("服务状态未知", "0"), ("", "0")):
             with self.subTest(health=label):
                 result = label
                 for pattern, replacement in substitutes:

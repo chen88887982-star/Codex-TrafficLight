@@ -222,6 +222,19 @@ class ServiceRuntimeTests(unittest.TestCase):
             self.assertTrue(request_authorized("192.168.2.117", {"token": ["secret-token"]}, ""))
             self.assertTrue(request_authorized("192.168.2.117", {}, "Bearer secret-token"))
 
+    def test_unconfigured_token_does_not_allow_lan_or_invalid_clients(self) -> None:
+        with patch("codex_status_server.STATUS_ACCESS_TOKEN", ""):
+            for address in ("127.0.0.1", "::1"):
+                self.assertTrue(request_authorized(address, {}, ""))
+            for address in ("192.0.2.10", "2001:db8::10", "not-an-ip"):
+                with self.subTest(address=address):
+                    self.assertFalse(request_authorized(address, {}, ""))
+
+    def test_non_ascii_credentials_are_compared_without_raising(self) -> None:
+        with patch("codex_status_server.STATUS_ACCESS_TOKEN", "secret-token"):
+            self.assertFalse(request_authorized("192.0.2.10", {"token": ["错误令牌"]}, ""))
+            self.assertFalse(request_authorized("192.0.2.10", {}, "Bearer 错误令牌"))
+
     def test_pid_file_is_removed_only_by_own_process(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             pid_file = Path(temporary) / "status-server.pid"

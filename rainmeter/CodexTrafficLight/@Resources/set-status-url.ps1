@@ -10,7 +10,7 @@ $VariablesFile = Join-Path $ScriptDir "variables.inc"
 if ([string]::IsNullOrWhiteSpace($Url)) {
   Add-Type -AssemblyName Microsoft.VisualBasic
   $Url = [Microsoft.VisualBasic.Interaction]::InputBox(
-    "请输入完整状态接口地址。本机用 http://127.0.0.1:8767/rainmeter；跨电脑用 http://对方IP:8767/rainmeter。",
+    "请输入完整状态接口地址。本机用 http://127.0.0.1:8767/rainmeter；跨电脑用 http://对方IP:8767/rainmeter?token=你的令牌。",
     "Codex 交通灯状态接口",
     "http://127.0.0.1:8767/rainmeter"
   )
