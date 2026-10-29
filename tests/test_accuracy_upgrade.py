@@ -131,6 +131,11 @@ class AccuracyTests(unittest.TestCase):
             shutil.copytree(ROOT / "common", root / "common", ignore=shutil.ignore_patterns("__pycache__"))
             internal = root / "mac/codex_status_server/.internal"
             shutil.copytree(ROOT / "mac/codex_status_server/.internal", internal)
+            diagnostics = root / "python-diagnostics"
+            diagnostics.mkdir()
+            (diagnostics / "sitecustomize.py").write_text(
+                "import faulthandler\nfaulthandler.dump_traceback_later(10, repeat=True)\n", encoding="utf-8"
+            )
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
@@ -140,6 +145,7 @@ class AccuracyTests(unittest.TestCase):
                 "PORT": str(port),
                 "CODEX_HOME": str(root / "codex-home"),
                 "CODEX_COMMAND": "trafficlight-test-codex-unavailable",
+                "PYTHONPATH": str(diagnostics),
                 "AUTO_MONITOR_CODEX": "0",
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
