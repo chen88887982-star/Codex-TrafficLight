@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,7 +83,8 @@ class ServerDataTests(unittest.TestCase):
                 is_approval_review_event=lambda event: False,
                 consider_session_usage_fallback=fallback,
             )
-            with patch.object(service_monitor.time, "sleep", side_effect=pause), self.assertRaises(StopMonitor):
+            clock = SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=pause)
+            with patch.object(service_monitor, "time", clock), self.assertRaises(StopMonitor):
                 service_monitor.run_monitor(app)
             self.assertEqual(app.TELEMETRY.task_for(path).status, "success")
             self.assertEqual(state["status"], "success")
