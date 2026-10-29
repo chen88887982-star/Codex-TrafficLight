@@ -438,7 +438,7 @@ class RainmeterContractTests(unittest.TestCase):
                 return str(value).replace("'", "''")
 
             command = (
-                ". '"
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);. '"
                 + quote(helper)
                 + "';function Get-CimInstance {};$a=Get-RainmeterSkinPath -SettingsPath '"
                 + quote(config)
@@ -447,10 +447,15 @@ class RainmeterContractTests(unittest.TestCase):
                 + "';Write-Output $a;Write-Output $b"
             )
             result = subprocess.run(
-                [executable, "-NoProfile", "-Command", command], capture_output=True, text=True, timeout=15
+                [executable, "-NoProfile", "-Command", command], capture_output=True, encoding="utf-8", timeout=15
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines(), [str(expected), str(expected)])
+            # Hosted Windows runners may expose TEMP through an 8.3 short path.
+            # PowerShell expands that alias; compare the resolved locations.
+            self.assertEqual(
+                [Path(value).resolve() for value in result.stdout.splitlines()],
+                [expected.resolve(), expected.resolve()],
+            )
 
 
 if __name__ == "__main__":
