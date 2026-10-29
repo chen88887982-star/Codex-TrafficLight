@@ -134,13 +134,27 @@ class AccuracyTests(unittest.TestCase):
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
-            env = {**os.environ, "PORT": str(port), "AUTO_MONITOR_CODEX": "0", "PYTHONDONTWRITEBYTECODE": "1"}
+            env = {
+                **os.environ,
+                "HOST": "127.0.0.1",
+                "PORT": str(port),
+                "CODEX_HOME": str(root / "codex-home"),
+                "CODEX_COMMAND": "trafficlight-test-codex-unavailable",
+                "AUTO_MONITOR_CODEX": "0",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
             env.pop("CODEX_STATUS_BASE_DIR", None)
 
             def run(name: str) -> subprocess.CompletedProcess[str]:
-                return subprocess.run(
-                    ["bash", str(internal / name)], env=env, capture_output=True, text=True, timeout=30
-                )
+                try:
+                    return subprocess.run(
+                        ["bash", str(internal / name)], env=env, capture_output=True, text=True, timeout=30
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    logs = []
+                    for path in sorted((internal.parent / ".runtime").glob("*.log")):
+                        logs.append(f"{path.name}:\n{path.read_text(encoding='utf-8', errors='replace')[-4000:]}")
+                    self.fail(f"{name} timed out; stdout={exc.stdout!r}; stderr={exc.stderr!r}\n" + "\n".join(logs))
 
             try:
                 started = run("start-background.command")
